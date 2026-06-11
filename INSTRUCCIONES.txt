@@ -1,0 +1,131 @@
+# ═══════════════════════════════════════════════════════════════
+#   CRYPTO EXPERT DASHBOARD — Guía de instalación completa
+#   Para alguien sin experiencia técnica previa
+# ═══════════════════════════════════════════════════════════════
+
+## ¿QUÉ NECESITAS?
+- Un ordenador con Windows, Mac o Linux
+- Conexión a internet
+- 20 minutos la primera vez
+
+---
+
+## OPCIÓN A: EN TU ORDENADOR (más fácil para empezar)
+
+### Paso 1 — Instalar Python
+Ve a https://python.org/downloads y descarga Python 3.11 o superior.
+Durante la instalación en Windows, marca la casilla "Add Python to PATH".
+
+### Paso 2 — Abrir la terminal
+- Windows: Pulsa Win+R, escribe "cmd", Enter
+- Mac: Abre "Terminal" desde Aplicaciones > Utilidades
+- Linux: Ctrl+Alt+T
+
+### Paso 3 — Ir a la carpeta del proyecto
+Copia la carpeta "crypto_dashboard" en tu escritorio, luego escribe:
+
+  Windows: cd %USERPROFILE%\Desktop\crypto_dashboard
+  Mac/Linux: cd ~/Desktop/crypto_dashboard
+
+### Paso 4 — Instalar dependencias (solo una vez)
+  pip install -r requirements.txt
+
+### Paso 5 — Iniciar el dashboard
+  python main.py
+
+### Paso 6 — Abrir en el navegador
+Abre tu navegador y ve a: http://localhost:8000
+¡Ya está funcionando con datos reales!
+
+### Para cerrarlo
+Pulsa Ctrl+C en la terminal.
+
+### Para que se inicie solo al encender el ordenador (opcional)
+Windows: Crea un acceso directo a "iniciar.bat" en la carpeta Inicio
+Mac: Añade el script a los elementos de inicio de sesión
+
+---
+
+## OPCIÓN B: EN UN SERVIDOR 24/7 (Railway.app — gratis)
+
+### Paso 1 — Crear cuenta en Railway
+Ve a https://railway.app y crea una cuenta gratuita (con GitHub).
+
+### Paso 2 — Crear repositorio en GitHub
+Ve a https://github.com, crea una cuenta si no tienes,
+y sube la carpeta crypto_dashboard como nuevo repositorio.
+
+### Paso 3 — Conectar Railway con GitHub
+En Railway: "New Project" → "Deploy from GitHub repo" → selecciona tu repo.
+
+### Paso 4 — Configurar el start command
+En Railway, en tu proyecto: Settings → Deploy → Start Command:
+  python main.py
+
+### Paso 5 — Obtener tu URL pública
+Railway te da automáticamente una URL tipo:
+  https://crypto-dashboard-xxx.railway.app
+Esa URL funciona desde cualquier dispositivo, 24/7, sin que tu ordenador esté encendido.
+
+### Coste: 0€
+Railway incluye 5$ de crédito mensual que se renueva. Este proyecto consume menos de 1$.
+
+---
+
+## MONEDAS DISPONIBLES
+Por defecto: BTC, ETH, SOL, XRP
+Puedes añadir cualquier moneda que cotice en Binance:
+ADA, DOT, AVAX, MATIC, LINK, ATOM, NEAR, APT, etc.
+Simplemente escribe el símbolo en el campo "Añadir" del dashboard.
+
+---
+
+## ACTUALIZACIÓN DE DATOS
+- Precios y análisis: cada 5 minutos automático
+- Fear & Greed: cada 5 minutos automático
+- Health check de APIs: cada hora automático
+- Nada manual que hacer
+
+---
+
+## MANTENIMIENTO MÍNIMO
+
+Una vez al mes (5 minutos):
+  Verificar que el dashboard carga correctamente.
+  Si alguna API muestra error rojo, esperar 10 minutos y recargar.
+
+Cada 3-6 meses (15 minutos):
+  Actualizar dependencias: pip install -r requirements.txt --upgrade
+
+Eso es todo.
+
+---
+
+## INDICADOR DE SALUD DE APIS
+El dashboard muestra en la parte superior el estado de cada fuente de datos:
+● Verde = funcionando correctamente
+● Rojo parpadeando = fallo, usando datos en caché
+  Si una API falla, el sistema usa el último dato conocido y te avisa claramente.
+  Nunca tomarás una decisión sin saber si los datos están actualizados.
+
+---
+
+## PREGUNTAS FRECUENTES
+
+P: ¿Necesito una cuenta en Binance?
+R: No. Los datos de precios son públicos y no requieren registro.
+
+P: ¿El programa puede comprar o vender por mí?
+R: No. Solo analiza y recomienda. Tú ejecutas las órdenes manualmente en tu exchange.
+
+P: ¿Qué hago si algo deja de funcionar?
+R: El dashboard te avisará con un mensaje en rojo. Cierra y vuelve a abrir con "python main.py".
+
+P: ¿Puedo usarlo en el móvil?
+R: Sí, si usas la Opción B (servidor Railway). Accede desde el navegador del móvil.
+
+---
+
+## DISCLAIMER
+Este software es una herramienta de análisis informativo.
+No garantiza resultados. Nunca inviertas más de lo que puedas permitirte perder.
