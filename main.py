@@ -21,7 +21,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import uvicorn
-
+os.makedirs("logs", exist_ok=True)
+os.makedirs("data", exist_ok=True)
 # ── CONFIGURACIÓN ──────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
