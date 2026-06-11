@@ -16,13 +16,16 @@ import statistics
 from datetime import datetime
 from typing import Optional
 
+# Crear carpetas necesarias antes de configurar el logging
+os.makedirs("logs", exist_ok=True)
+os.makedirs("data", exist_ok=True)
+
 import httpx
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import uvicorn
-os.makedirs("logs", exist_ok=True)
-os.makedirs("data", exist_ok=True)
+
 # ── CONFIGURACIÓN ──────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
@@ -39,8 +42,8 @@ INTERVALO_ACTUALIZACION = 300
 INTERVALO_HEALTH_CHECK  = 3600
 
 APIS = {
-    "binance_klines":    "https://api.binance.com/api/v3/klines",
-    "binance_orderbook": "https://api.binance.com/api/v3/depth",
+    "binance_klines":    "https://api.binance.vision/api/v3/klines",
+    "binance_orderbook": "https://api.binance.vision/api/v3/depth",
     "binance_funding":   "https://fapi.binance.com/fapi/v1/fundingRate",
     "binance_oi":        "https://fapi.binance.com/fapi/v1/openInterest",
     "binance_lsratio":   "https://fapi.binance.com/futures/data/globalLongShortAccountRatio",
@@ -1089,7 +1092,31 @@ def calcular_score_completo(klines_4h: dict, klines_1h: dict, klines_1d: dict,
     vols   = klines_4h.get("volumenes", [])
 
     if not closes:
-        return {"score": 50, "accion": "ESPERAR", "confianza": "Sin datos"}
+        return {
+            "score": 50, "score_base": 50, "bonus_mtf": 0,
+            "accion": "ESPERAR", "confianza": "Sin datos Binance",
+            "advertencia": "Binance no disponible — datos en cache o sin datos",
+            "capas": [], "bull_count": 0, "bear_count": 0,
+            "mtf": {
+                "alineacion": "mixta", "descripcion": "Sin datos",
+                "bonus": 0, "score_pond": 50,
+                "buy_count": 0, "sell_count": 0,
+                "tf_1h": {"nombre":"1h","tendencia":"neutral","senal":"neutral","rsi":50,"macd":"neutral","macd_cruce":"ninguno","sma_tendencia":"neutral","vol_ratio":1,"precio":0,"sma20":0,"sma50":0,"score":50},
+                "tf_4h": {"nombre":"4h","tendencia":"neutral","senal":"neutral","rsi":50,"macd":"neutral","macd_cruce":"ninguno","sma_tendencia":"neutral","vol_ratio":1,"precio":0,"sma20":0,"sma50":0,"score":50},
+                "tf_1d": {"nombre":"Diario","tendencia":"neutral","senal":"neutral","rsi":50,"macd":"neutral","macd_cruce":"ninguno","sma_tendencia":"neutral","vol_ratio":1,"precio":0,"sma20":0,"sma50":0,"score":50},
+            },
+            "rsi": 50, "stoch_rsi": 50,
+            "macd": {"macd":0,"signal":0,"histograma":0,"tendencia":"neutral","cruce":"ninguno"},
+            "sma50": 0, "sma200": 0, "sma20": 0,
+            "bollinger": {"superior":0,"media":0,"inferior":0,"pct_b":50,"ancho":0},
+            "patron": {"patron":"Sin datos","senal":"neutral","fiabilidad":0,"confirmado":False,"contexto":""},
+            "divergencia": {"tipo":"ninguna","senal":"neutral","descripcion":"Sin datos","fuerza":0},
+            "vol_ratio": 1.0,
+            "dxy": 102.5, "dxy_fuente": "estimado", "fed_rate": 4.5,
+            "ciclo": "distribution", "ciclo_pct": 50.0, "ciclo_desc": "Sin datos",
+            "funding": 0.01, "open_interest": 0, "ls_ratio": 1.0,
+            "libro": {}, "noticias": noticias, "btc_cambio_4h": 0,
+        }
 
     precio = closes[-1]
 
