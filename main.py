@@ -50,6 +50,12 @@ APIS = {
     "fear_greed":        "https://api.alternative.me/fng/?limit=1",
     "coingecko_global":  "https://api.coingecko.com/api/v3/global",
     "cryptopanic":       "https://cryptopanic.com/api/free/v1/posts/",
+    # Bybit como fallback geográfico para Railway (EEUU)
+    "bybit_klines":      "https://api.bybit.com/v5/market/kline",
+    "bybit_orderbook":   "https://api.bybit.com/v5/market/orderbook",
+    "bybit_funding":     "https://api.bybit.com/v5/market/funding/history",
+    "bybit_oi":          "https://api.bybit.com/v5/market/open-interest",
+    "bybit_ticker":      "https://api.bybit.com/v5/market/tickers",
 }
 
 health_status = {k: {"ok": True, "ultimo_ok": time.time(), "errores": 0}
@@ -854,21 +860,52 @@ async def fetch(client, nombre: str, url: str, params: dict = None):
 
 
 async def obtener_klines(client, simbolo: str, intervalo="4h", limit=200) -> dict:
+    """
+    Obtiene klines de Binance primero. Si falla (restricción geográfica en Railway),
+    usa Bybit automáticamente como fallback.
+    """
+    # Intentar Binance primero
     datos = await fetch(client, "binance_klines", APIS["binance_klines"],
                         {"symbol": f"{simbolo}USDT", "interval": intervalo, "limit": limit})
-    if not datos:
-        return {}
+    if datos and isinstance(datos, list) and len(datos) > 10:
+        try:
+            return {
+                "opens":     [float(k[1]) for k in datos],
+                "highs":     [float(k[2]) for k in datos],
+                "lows":      [float(k[3]) for k in datos],
+                "closes":    [float(k[4]) for k in datos],
+                "volumenes": [float(k[5]) for k in datos],
+            }
+        except Exception:
+            pass
+
+    # Fallback: Bybit
+    # Convertir intervalo de Binance a Bybit
+    intervalo_bybit = {
+        "1h": "60", "4h": "240", "1d": "D"
+    }.get(intervalo, "240")
+
     try:
-        return {
-            "opens":     [float(k[1]) for k in datos],
-            "highs":     [float(k[2]) for k in datos],
-            "lows":      [float(k[3]) for k in datos],
-            "closes":    [float(k[4]) for k in datos],
-            "volumenes": [float(k[5]) for k in datos],
-        }
+        r = await client.get(APIS["bybit_klines"], params={
+            "category": "spot", "symbol": f"{simbolo}USDT",
+            "interval": intervalo_bybit, "limit": min(limit, 200)
+        }, timeout=10)
+        datos_bybit = r.json()
+        if datos_bybit.get("retCode") == 0:
+            klines = datos_bybit["result"]["list"]
+            # Bybit devuelve en orden inverso (más reciente primero)
+            klines = list(reversed(klines))
+            return {
+                "opens":     [float(k[1]) for k in klines],
+                "highs":     [float(k[2]) for k in klines],
+                "lows":      [float(k[3]) for k in klines],
+                "closes":    [float(k[4]) for k in klines],
+                "volumenes": [float(k[5]) for k in klines],
+            }
     except Exception as e:
-        log.error(f"Error klines {simbolo} {intervalo}: {e}")
-        return {}
+        log.warning(f"[WARN] Bybit klines {simbolo}: {e}")
+
+    return {}
 
 
 async def obtener_dxy_fed(client) -> dict:
@@ -982,8 +1019,26 @@ def detectar_ciclo_mercado(closes_diario: list) -> dict:
 
 
 async def obtener_orderbook(client, simbolo: str) -> dict:
-    return await fetch(client, "binance_orderbook", APIS["binance_orderbook"],
-                       {"symbol": f"{simbolo}USDT", "limit": 100}) or {}
+    """Orderbook de Binance con fallback a Bybit."""
+    datos = await fetch(client, "binance_orderbook", APIS["binance_orderbook"],
+                        {"symbol": f"{simbolo}USDT", "limit": 100})
+    if datos and ("bids" in datos or "asks" in datos):
+        return datos
+
+    # Fallback Bybit
+    try:
+        r = await client.get(APIS["bybit_orderbook"], params={
+            "category": "spot", "symbol": f"{simbolo}USDT", "limit": 50
+        }, timeout=10)
+        d = r.json()
+        if d.get("retCode") == 0:
+            return {
+                "bids": d["result"]["b"],
+                "asks": d["result"]["a"],
+            }
+    except Exception as e:
+        log.warning(f"[WARN] Bybit orderbook {simbolo}: {e}")
+    return {}
 
 
 async def obtener_fear_greed(client) -> dict:
@@ -1003,6 +1058,7 @@ async def obtener_dominancia_btc(client) -> float:
 
 
 async def obtener_funding_rate(client, simbolo: str) -> float:
+    """Funding rate de Binance futures con fallback a Bybit."""
     try:
         datos = await fetch(client, "binance_funding", APIS["binance_funding"],
                             {"symbol": f"{simbolo}USDT", "limit": 1})
@@ -1010,10 +1066,22 @@ async def obtener_funding_rate(client, simbolo: str) -> float:
             return round(float(datos[0]["fundingRate"]) * 100, 4)
     except Exception:
         pass
+
+    # Fallback Bybit
+    try:
+        r = await client.get(APIS["bybit_funding"], params={
+            "category": "linear", "symbol": f"{simbolo}USDT", "limit": 1
+        }, timeout=10)
+        d = r.json()
+        if d.get("retCode") == 0 and d["result"]["list"]:
+            return round(float(d["result"]["list"][0]["fundingRate"]) * 100, 4)
+    except Exception as e:
+        log.warning(f"[WARN] Bybit funding {simbolo}: {e}")
     return 0.01
 
 
 async def obtener_open_interest(client, simbolo: str) -> float:
+    """Open interest de Binance con fallback a Bybit."""
     try:
         datos = await fetch(client, "binance_oi", APIS["binance_oi"],
                             {"symbol": f"{simbolo}USDT"})
@@ -1021,6 +1089,18 @@ async def obtener_open_interest(client, simbolo: str) -> float:
             return round(float(datos.get("openInterest", 0)) / 1e9, 2)
     except Exception:
         pass
+
+    # Fallback Bybit
+    try:
+        r = await client.get(APIS["bybit_oi"], params={
+            "category": "linear", "symbol": f"{simbolo}USDT",
+            "intervalTime": "4h", "limit": 1
+        }, timeout=10)
+        d = r.json()
+        if d.get("retCode") == 0 and d["result"]["list"]:
+            return round(float(d["result"]["list"][0]["openInterest"]) / 1e9, 2)
+    except Exception as e:
+        log.warning(f"[WARN] Bybit OI {simbolo}: {e}")
     return 0.0
 
 
