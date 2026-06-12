@@ -55,7 +55,7 @@ INTERVALO_ACTUALIZACION = 300
 INTERVALO_HEALTH_CHECK  = 3600
 
 # URLs base de Binance — autenticado usa api.binance.com, sin auth usa api.binance.vision
-BINANCE_BASE     = "https://api.binance.com" if BINANCE_AUTENTICADO else "https://api.binance.vision"
+BINANCE_BASE     = "https://api.binance.vision"
 BINANCE_FUTURES  = "https://fapi.binance.com"
 
 APIS = {
@@ -925,6 +925,7 @@ async def obtener_klines(client, simbolo: str, intervalo="4h", limit=200) -> dic
             headers=binance_headers(),
             timeout=10
         )
+        log.info(f"[BINANCE] klines {simbolo} {intervalo}: HTTP {r.status_code} | Auth: {BINANCE_AUTENTICADO}")
         datos = r.json() if r.status_code == 200 else None
         if datos and isinstance(datos, list) and len(datos) > 10:
             cache_datos["binance_klines"] = datos
@@ -1818,7 +1819,7 @@ async def api_diario_listar():
             try:
                 async with httpx.AsyncClient(timeout=5) as client:
                     r = await client.get(
-                        "https://api.binance.com/api/v3/ticker/price",
+                        f"{BINANCE_BASE}/api/v3/ticker/price",
                         params={"symbol": f"{op['simbolo']}USDT"}
                     )
                     precio = float(r.json()["price"])
@@ -1905,7 +1906,7 @@ async def monitorizar_operaciones():
             try:
                 async with httpx.AsyncClient(timeout=5) as client:
                     r = await client.get(
-                        "https://api.binance.com/api/v3/ticker/price",
+                        f"{BINANCE_BASE}/api/v3/ticker/price",
                         params={"symbol": f"{op['simbolo']}USDT"}
                     )
                     precio = float(r.json()["price"])
@@ -1959,6 +1960,7 @@ async def loop_actualizacion():
             nombre: {
                 "ok":       estado["ok"],
                 "errores":  estado["errores"],
+                "fuente":   estado.get("fuente", ""),
                 "ultimo_ok": datetime.fromtimestamp(estado["ultimo_ok"]).strftime("%H:%M:%S"),
                 "minutos_sin_datos": round((time.time() - estado["ultimo_ok"]) / 60, 0)
                                      if not estado["ok"] else 0,
@@ -2007,12 +2009,12 @@ async def dashboard():
 
 @app.on_event("startup")
 async def startup():
-    log.info("[START] Crypto Expert Dashboard v6 iniciando...")
+    log.info("[START] Crypto Expert Dashboard v7 iniciando...")
     os.makedirs("data", exist_ok=True)
     asyncio.create_task(loop_actualizacion())
     asyncio.create_task(health_check_periodico())
     asyncio.create_task(monitorizar_operaciones())
-    log.info("[OK] Dashboard v6 listo - Diario de operaciones activo")
+    log.info("[OK] Dashboard v7 listo - Binance vision + Diario de operaciones activo")
 
 
 if __name__ == "__main__":
