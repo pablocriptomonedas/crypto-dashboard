@@ -7,6 +7,8 @@
 """
 
 import asyncio
+import hashlib
+import hmac
 import json
 import logging
 import math
@@ -15,6 +17,7 @@ import time
 import statistics
 from datetime import datetime
 from typing import Optional
+from urllib.parse import urlencode
 
 # Crear carpetas necesarias antes de configurar el logging
 os.makedirs("logs", exist_ok=True)
@@ -37,26 +40,57 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+# API Keys de Binance desde variables de entorno (nunca en el código)
+BINANCE_API_KEY    = os.environ.get("BINANCE_API_KEY", "")
+BINANCE_SECRET_KEY = os.environ.get("BINANCE_SECRET_KEY", "")
+BINANCE_AUTENTICADO = bool(BINANCE_API_KEY and BINANCE_SECRET_KEY)
+
+if BINANCE_AUTENTICADO:
+    log.info("[OK] Binance API key configurada — usando endpoints autenticados")
+else:
+    log.warning("[WARN] Binance API key no configurada — usando endpoints públicos con fallback Bybit")
+
 MONEDAS_DEFAULT = ["BTC", "ETH", "SOL", "XRP"]
 INTERVALO_ACTUALIZACION = 300
 INTERVALO_HEALTH_CHECK  = 3600
 
+# URLs base de Binance — autenticado usa api.binance.com, sin auth usa api.binance.vision
+BINANCE_BASE     = "https://api.binance.com" if BINANCE_AUTENTICADO else "https://api.binance.vision"
+BINANCE_FUTURES  = "https://fapi.binance.com"
+
 APIS = {
-    "binance_klines":    "https://api.binance.vision/api/v3/klines",
-    "binance_orderbook": "https://api.binance.vision/api/v3/depth",
-    "binance_funding":   "https://fapi.binance.com/fapi/v1/fundingRate",
-    "binance_oi":        "https://fapi.binance.com/fapi/v1/openInterest",
-    "binance_lsratio":   "https://fapi.binance.com/futures/data/globalLongShortAccountRatio",
+    "binance_klines":    f"{BINANCE_BASE}/api/v3/klines",
+    "binance_orderbook": f"{BINANCE_BASE}/api/v3/depth",
+    "binance_funding":   f"{BINANCE_FUTURES}/fapi/v1/fundingRate",
+    "binance_oi":        f"{BINANCE_FUTURES}/fapi/v1/openInterest",
+    "binance_lsratio":   f"{BINANCE_FUTURES}/futures/data/globalLongShortAccountRatio",
     "fear_greed":        "https://api.alternative.me/fng/?limit=1",
     "coingecko_global":  "https://api.coingecko.com/api/v3/global",
-    "cryptopanic":       "https://cryptopanic.com/api/free/v1/posts/",
-    # Bybit como fallback geográfico para Railway (EEUU)
     "bybit_klines":      "https://api.bybit.com/v5/market/kline",
     "bybit_orderbook":   "https://api.bybit.com/v5/market/orderbook",
     "bybit_funding":     "https://api.bybit.com/v5/market/funding/history",
     "bybit_oi":          "https://api.bybit.com/v5/market/open-interest",
-    "bybit_ticker":      "https://api.bybit.com/v5/market/tickers",
 }
+
+def binance_headers() -> dict:
+    """Headers con API key para peticiones autenticadas a Binance."""
+    if BINANCE_AUTENTICADO:
+        return {"X-MBX-APIKEY": BINANCE_API_KEY}
+    return {}
+
+def binance_sign(params: dict) -> dict:
+    """Añade timestamp y firma HMAC-SHA256 para endpoints que lo requieren."""
+    if not BINANCE_AUTENTICADO:
+        return params
+    params["timestamp"] = int(time.time() * 1000)
+    query = urlencode(params)
+    firma = hmac.new(
+        BINANCE_SECRET_KEY.encode("utf-8"),
+        query.encode("utf-8"),
+        hashlib.sha256
+    ).hexdigest()
+    params["signature"] = firma
+    return params
 
 health_status = {
     "precios_mercado":   {"ok": True, "ultimo_ok": time.time(), "errores": 0, "fuente": "binance"},
@@ -66,7 +100,7 @@ health_status = {
     "ls_ratio":          {"ok": True, "ultimo_ok": time.time(), "errores": 0, "fuente": "binance"},
     "fear_greed":        {"ok": True, "ultimo_ok": time.time(), "errores": 0, "fuente": "alternative.me"},
     "coingecko_global":  {"ok": True, "ultimo_ok": time.time(), "errores": 0, "fuente": "coingecko"},
-    "noticias":          {"ok": True, "ultimo_ok": time.time(), "errores": 0, "fuente": "cryptopanic"},
+    "noticias":          {"ok": True, "ultimo_ok": time.time(), "errores": 0, "fuente": "coindesk/cointelegraph"},
     "dxy":               {"ok": True, "ultimo_ok": time.time(), "errores": 0, "fuente": "stooq"},
 }
 
@@ -87,7 +121,7 @@ def marcar_error(clave: str):
         health_status[clave]["ok"]      = False
         health_status[clave]["errores"] += 1
 
-app = FastAPI(title="Crypto Expert Dashboard v4")
+app = FastAPI(title="Crypto Expert Dashboard v7")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -879,22 +913,31 @@ async def fetch(client, nombre: str, url: str, params: dict = None):
 
 
 async def obtener_klines(client, simbolo: str, intervalo="4h", limit=200) -> dict:
-    # Intentar Binance primero
-    datos = await fetch(client, "binance_klines", APIS["binance_klines"],
-                        {"symbol": f"{simbolo}USDT", "interval": intervalo, "limit": limit})
-    if datos and isinstance(datos, list) and len(datos) > 10:
-        try:
-            result = {
+    """
+    Obtiene klines de Binance con autenticación si hay API key configurada.
+    Fallback a Bybit si Binance falla.
+    """
+    try:
+        params = {"symbol": f"{simbolo}USDT", "interval": intervalo, "limit": limit}
+        r = await client.get(
+            APIS["binance_klines"],
+            params=params,
+            headers=binance_headers(),
+            timeout=10
+        )
+        datos = r.json() if r.status_code == 200 else None
+        if datos and isinstance(datos, list) and len(datos) > 10:
+            cache_datos["binance_klines"] = datos
+            marcar_ok("precios_mercado", "binance")
+            return {
                 "opens":     [float(k[1]) for k in datos],
                 "highs":     [float(k[2]) for k in datos],
                 "lows":      [float(k[3]) for k in datos],
                 "closes":    [float(k[4]) for k in datos],
                 "volumenes": [float(k[5]) for k in datos],
             }
-            marcar_ok("precios_mercado", "binance")
-            return result
-        except Exception:
-            pass
+    except Exception as e:
+        log.warning(f"[WARN] Binance klines {simbolo}: {e}")
 
     # Fallback: Bybit
     intervalo_bybit = {"1h": "60", "4h": "240", "1d": "D"}.get(intervalo, "240")
@@ -1032,11 +1075,20 @@ def detectar_ciclo_mercado(closes_diario: list) -> dict:
 
 
 async def obtener_orderbook(client, simbolo: str) -> dict:
-    datos = await fetch(client, "binance_orderbook", APIS["binance_orderbook"],
-                        {"symbol": f"{simbolo}USDT", "limit": 100})
-    if datos and ("bids" in datos or "asks" in datos):
-        marcar_ok("libro_ordenes", "binance")
-        return datos
+    """Orderbook de Binance autenticado con fallback a Bybit."""
+    try:
+        r = await client.get(
+            APIS["binance_orderbook"],
+            params={"symbol": f"{simbolo}USDT", "limit": 100},
+            headers=binance_headers(),
+            timeout=10
+        )
+        datos = r.json() if r.status_code == 200 else None
+        if datos and ("bids" in datos or "asks" in datos):
+            marcar_ok("libro_ordenes", "binance")
+            return datos
+    except Exception as e:
+        log.warning(f"[WARN] Binance orderbook {simbolo}: {e}")
 
     try:
         r = await client.get(APIS["bybit_orderbook"], params={
@@ -1074,9 +1126,15 @@ async def obtener_dominancia_btc(client) -> float:
 
 
 async def obtener_funding_rate(client, simbolo: str) -> float:
+    """Funding rate de Binance autenticado con fallback a Bybit."""
     try:
-        datos = await fetch(client, "binance_funding", APIS["binance_funding"],
-                            {"symbol": f"{simbolo}USDT", "limit": 1})
+        r = await client.get(
+            APIS["binance_funding"],
+            params={"symbol": f"{simbolo}USDT", "limit": 1},
+            headers=binance_headers(),
+            timeout=10
+        )
+        datos = r.json() if r.status_code == 200 else None
         if datos and isinstance(datos, list):
             marcar_ok("funding_rate", "binance")
             return round(float(datos[0]["fundingRate"]) * 100, 4)
@@ -1099,9 +1157,15 @@ async def obtener_funding_rate(client, simbolo: str) -> float:
 
 
 async def obtener_open_interest(client, simbolo: str) -> float:
+    """Open interest de Binance autenticado con fallback a Bybit."""
     try:
-        datos = await fetch(client, "binance_oi", APIS["binance_oi"],
-                            {"symbol": f"{simbolo}USDT"})
+        r = await client.get(
+            APIS["binance_oi"],
+            params={"symbol": f"{simbolo}USDT"},
+            headers=binance_headers(),
+            timeout=10
+        )
+        datos = r.json() if r.status_code == 200 else None
         if datos:
             marcar_ok("open_interest", "binance")
             return round(float(datos.get("openInterest", 0)) / 1e9, 2)
@@ -1125,9 +1189,15 @@ async def obtener_open_interest(client, simbolo: str) -> float:
 
 
 async def obtener_ls_ratio(client, simbolo: str) -> float:
+    """Ratio largo/corto de Binance autenticado."""
     try:
-        datos = await fetch(client, "binance_lsratio", APIS["binance_lsratio"],
-                            {"symbol": f"{simbolo}USDT", "period": "4h", "limit": 1})
+        r = await client.get(
+            APIS["binance_lsratio"],
+            params={"symbol": f"{simbolo}USDT", "period": "4h", "limit": 1},
+            headers=binance_headers(),
+            timeout=10
+        )
+        datos = r.json() if r.status_code == 200 else None
         if datos and isinstance(datos, list):
             marcar_ok("ls_ratio", "binance")
             return round(float(datos[0]["longShortRatio"]), 2)
@@ -1433,7 +1503,7 @@ def calcular_score_completo(klines_4h: dict, klines_1h: dict, klines_1d: dict,
          "peso": "13%", "score": round(deriv_score * 100),
          "valor": f"Funding {'+' if funding > 0 else ''}{funding}% | L/S {ls_ratio}",
          "senal": "buy" if deriv_score > .62 else "sell" if deriv_score < .42 else "neutral"},
-        {"nombre": "Noticias (CryptoPanic)",
+        {"nombre": "Noticias (CoinDesk/CoinTelegraph)",
          "peso": "10%", "score": round(noticia_score * 100),
          "valor": noticias.get("resumen", "Sin datos"),
          "senal": "buy" if noticia_score > .62 else "sell" if noticia_score < .42 else "neutral"},
