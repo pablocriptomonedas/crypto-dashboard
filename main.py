@@ -58,10 +58,34 @@ APIS = {
     "bybit_ticker":      "https://api.bybit.com/v5/market/tickers",
 }
 
-health_status = {k: {"ok": True, "ultimo_ok": time.time(), "errores": 0}
-                 for k in APIS}
+health_status = {
+    "precios_mercado":   {"ok": True, "ultimo_ok": time.time(), "errores": 0, "fuente": "binance"},
+    "libro_ordenes":     {"ok": True, "ultimo_ok": time.time(), "errores": 0, "fuente": "binance"},
+    "funding_rate":      {"ok": True, "ultimo_ok": time.time(), "errores": 0, "fuente": "binance"},
+    "open_interest":     {"ok": True, "ultimo_ok": time.time(), "errores": 0, "fuente": "binance"},
+    "ls_ratio":          {"ok": True, "ultimo_ok": time.time(), "errores": 0, "fuente": "binance"},
+    "fear_greed":        {"ok": True, "ultimo_ok": time.time(), "errores": 0, "fuente": "alternative.me"},
+    "coingecko_global":  {"ok": True, "ultimo_ok": time.time(), "errores": 0, "fuente": "coingecko"},
+    "noticias":          {"ok": True, "ultimo_ok": time.time(), "errores": 0, "fuente": "cryptopanic"},
+    "dxy":               {"ok": True, "ultimo_ok": time.time(), "errores": 0, "fuente": "stooq"},
+}
+
+# Cache interna para APIs legacy (mantener compatibilidad)
 cache_datos = {}
 btc_cambio_cache = {"valor": 0.0, "ts": 0}
+
+def marcar_ok(clave: str, fuente: str = ""):
+    if clave in health_status:
+        health_status[clave]["ok"]        = True
+        health_status[clave]["ultimo_ok"] = time.time()
+        health_status[clave]["errores"]   = 0
+        if fuente:
+            health_status[clave]["fuente"] = fuente
+
+def marcar_error(clave: str):
+    if clave in health_status:
+        health_status[clave]["ok"]      = False
+        health_status[clave]["errores"] += 1
 
 app = FastAPI(title="Crypto Expert Dashboard v4")
 
@@ -847,41 +871,33 @@ async def fetch(client, nombre: str, url: str, params: dict = None):
         r = await client.get(url, params=params, timeout=10)
         r.raise_for_status()
         datos = r.json()
-        health_status[nombre]["ok"]        = True
-        health_status[nombre]["ultimo_ok"] = time.time()
-        health_status[nombre]["errores"]   = 0
         cache_datos[nombre] = datos
         return datos
     except Exception as e:
-        health_status[nombre]["ok"]      = False
-        health_status[nombre]["errores"] += 1
         log.warning(f"[WARN] {nombre} -- {e} -- usando cache")
         return cache_datos.get(nombre)
 
 
 async def obtener_klines(client, simbolo: str, intervalo="4h", limit=200) -> dict:
-    """
-    Obtiene klines de Binance primero. Si falla (restricción geográfica en Railway),
-    usa Bybit automáticamente como fallback.
-    """
     # Intentar Binance primero
     datos = await fetch(client, "binance_klines", APIS["binance_klines"],
                         {"symbol": f"{simbolo}USDT", "interval": intervalo, "limit": limit})
     if datos and isinstance(datos, list) and len(datos) > 10:
         try:
-            return {
+            result = {
                 "opens":     [float(k[1]) for k in datos],
                 "highs":     [float(k[2]) for k in datos],
                 "lows":      [float(k[3]) for k in datos],
                 "closes":    [float(k[4]) for k in datos],
                 "volumenes": [float(k[5]) for k in datos],
             }
+            marcar_ok("precios_mercado", "binance")
+            return result
         except Exception:
             pass
 
     # Fallback: Bybit
     intervalo_bybit = {"1h": "60", "4h": "240", "1d": "D"}.get(intervalo, "240")
-
     try:
         r = await client.get(APIS["bybit_klines"], params={
             "category": "spot", "symbol": f"{simbolo}USDT",
@@ -890,9 +906,7 @@ async def obtener_klines(client, simbolo: str, intervalo="4h", limit=200) -> dic
         datos_bybit = r.json()
         if datos_bybit.get("retCode") == 0:
             klines = list(reversed(datos_bybit["result"]["list"]))
-            # Marcar Binance como OK visualmente cuando Bybit funciona
-            health_status["binance_klines"]["ok"]        = True
-            health_status["binance_klines"]["ultimo_ok"] = time.time()
+            marcar_ok("precios_mercado", "bybit")
             return {
                 "opens":     [float(k[1]) for k in klines],
                 "highs":     [float(k[2]) for k in klines],
@@ -903,6 +917,7 @@ async def obtener_klines(client, simbolo: str, intervalo="4h", limit=200) -> dic
     except Exception as e:
         log.warning(f"[WARN] Bybit klines {simbolo}: {e}")
 
+    marcar_error("precios_mercado")
     return {}
 
 
@@ -1017,80 +1032,82 @@ def detectar_ciclo_mercado(closes_diario: list) -> dict:
 
 
 async def obtener_orderbook(client, simbolo: str) -> dict:
-    """Orderbook de Binance con fallback a Bybit."""
     datos = await fetch(client, "binance_orderbook", APIS["binance_orderbook"],
                         {"symbol": f"{simbolo}USDT", "limit": 100})
     if datos and ("bids" in datos or "asks" in datos):
+        marcar_ok("libro_ordenes", "binance")
         return datos
 
-    # Fallback Bybit
     try:
         r = await client.get(APIS["bybit_orderbook"], params={
             "category": "spot", "symbol": f"{simbolo}USDT", "limit": 50
         }, timeout=10)
         d = r.json()
         if d.get("retCode") == 0:
-            health_status["binance_orderbook"]["ok"]        = True
-            health_status["binance_orderbook"]["ultimo_ok"] = time.time()
-            return {
-                "bids": d["result"]["b"],
-                "asks": d["result"]["a"],
-            }
+            marcar_ok("libro_ordenes", "bybit")
+            return {"bids": d["result"]["b"], "asks": d["result"]["a"]}
     except Exception as e:
         log.warning(f"[WARN] Bybit orderbook {simbolo}: {e}")
+
+    marcar_error("libro_ordenes")
     return {}
 
 
 async def obtener_fear_greed(client) -> dict:
     datos = await fetch(client, "fear_greed", APIS["fear_greed"])
     if datos and "data" in datos:
+        marcar_ok("fear_greed", "alternative.me")
         return {"valor": int(datos["data"][0]["value"]),
                 "clasificacion": datos["data"][0]["value_classification"],
                 "fuente": "real"}
+    marcar_error("fear_greed")
     return {"valor": 50, "clasificacion": "Neutral", "fuente": "estimado"}
 
 
 async def obtener_dominancia_btc(client) -> float:
     datos = await fetch(client, "coingecko_global", APIS["coingecko_global"])
     if datos and "data" in datos:
+        marcar_ok("coingecko_global", "coingecko")
         return round(datos["data"].get("market_cap_percentage", {}).get("btc", 58.0), 1)
+    marcar_error("coingecko_global")
     return 58.0
 
 
 async def obtener_funding_rate(client, simbolo: str) -> float:
-    """Funding rate de Binance futures con fallback a Bybit."""
     try:
         datos = await fetch(client, "binance_funding", APIS["binance_funding"],
                             {"symbol": f"{simbolo}USDT", "limit": 1})
         if datos and isinstance(datos, list):
+            marcar_ok("funding_rate", "binance")
             return round(float(datos[0]["fundingRate"]) * 100, 4)
     except Exception:
         pass
 
-    # Fallback Bybit
     try:
         r = await client.get(APIS["bybit_funding"], params={
             "category": "linear", "symbol": f"{simbolo}USDT", "limit": 1
         }, timeout=10)
         d = r.json()
         if d.get("retCode") == 0 and d["result"]["list"]:
+            marcar_ok("funding_rate", "bybit")
             return round(float(d["result"]["list"][0]["fundingRate"]) * 100, 4)
     except Exception as e:
         log.warning(f"[WARN] Bybit funding {simbolo}: {e}")
+
+    marcar_error("funding_rate")
     return 0.01
 
 
 async def obtener_open_interest(client, simbolo: str) -> float:
-    """Open interest de Binance con fallback a Bybit."""
     try:
         datos = await fetch(client, "binance_oi", APIS["binance_oi"],
                             {"symbol": f"{simbolo}USDT"})
         if datos:
+            marcar_ok("open_interest", "binance")
             return round(float(datos.get("openInterest", 0)) / 1e9, 2)
     except Exception:
         pass
 
-    # Fallback Bybit
     try:
         r = await client.get(APIS["bybit_oi"], params={
             "category": "linear", "symbol": f"{simbolo}USDT",
@@ -1098,9 +1115,12 @@ async def obtener_open_interest(client, simbolo: str) -> float:
         }, timeout=10)
         d = r.json()
         if d.get("retCode") == 0 and d["result"]["list"]:
+            marcar_ok("open_interest", "bybit")
             return round(float(d["result"]["list"][0]["openInterest"]) / 1e9, 2)
     except Exception as e:
         log.warning(f"[WARN] Bybit OI {simbolo}: {e}")
+
+    marcar_error("open_interest")
     return 0.0
 
 
@@ -1109,9 +1129,11 @@ async def obtener_ls_ratio(client, simbolo: str) -> float:
         datos = await fetch(client, "binance_lsratio", APIS["binance_lsratio"],
                             {"symbol": f"{simbolo}USDT", "period": "4h", "limit": 1})
         if datos and isinstance(datos, list):
+            marcar_ok("ls_ratio", "binance")
             return round(float(datos[0]["longShortRatio"]), 2)
     except Exception:
         pass
+    marcar_error("ls_ratio")
     return 1.0
 
 
@@ -1129,6 +1151,7 @@ async def obtener_noticias(client, simbolo: str) -> dict:
                                {"currencies": simbolo, "filter": "rising", "public": "true"})
 
         if not datos or "results" not in datos:
+            marcar_error("noticias")
             return {"score_ajuste": 0, "noticias": [], "fuente": "sin_datos",
                     "positivas": 0, "negativas": 0, "resumen": "Sin datos de noticias"}
 
@@ -1150,6 +1173,7 @@ async def obtener_noticias(client, simbolo: str) -> dict:
         ratio_n      = (positivas - negativas) / total if total > 0 else 0
         score_ajuste = round(ratio_n * 15, 1)
 
+        marcar_ok("noticias", "cryptopanic")
         return {
             "score_ajuste": score_ajuste,
             "positivas":    positivas,
