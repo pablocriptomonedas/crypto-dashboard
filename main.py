@@ -1138,52 +1138,65 @@ async def obtener_ls_ratio(client, simbolo: str) -> float:
 
 
 async def obtener_noticias(client, simbolo: str) -> dict:
+    """
+    Obtiene noticias de CoinDesk y CoinTelegraph via RSS.
+    CryptoPanic elimino su API gratuita en abril 2026.
+    """
+    import re
     try:
-        # Intentar CryptoPanic v2
-        datos = await fetch(client, "cryptopanic", 
-                           "https://cryptopanic.com/api/v1/posts/",
-                           {"currencies": simbolo, "filter": "hot", "public": "true", "auth_token": "free"})
-        
-        # Si falla, intentar sin auth_token
-        if not datos or "results" not in datos:
-            datos = await fetch(client, "cryptopanic",
-                               "https://cryptopanic.com/api/free/v1/posts/",
-                               {"currencies": simbolo, "filter": "rising", "public": "true"})
+        noticias_raw = []
+        feeds = [
+            "https://www.coindesk.com/arc/outboundfeeds/rss/",
+            "https://cointelegraph.com/rss",
+        ]
+        for feed_url in feeds:
+            try:
+                r = await client.get(feed_url, timeout=8,
+                                     headers={"Accept": "application/rss+xml, application/xml, text/xml"})
+                if r.status_code == 200:
+                    contenido = r.text
+                    titulos = re.findall(r'<title><![CDATA[(.*?)]]></title>', contenido)
+                    if not titulos:
+                        titulos = re.findall(r'<title>(.*?)</title>', contenido)
+                    titulos = [t for t in titulos[1:16]
+                               if len(t) > 20 and 'RSS' not in t and 'Feed' not in t]
+                    nombres = {"BTC": ["bitcoin","btc"],"ETH": ["ethereum","eth"],
+                               "SOL": ["solana","sol"],"XRP": ["xrp","ripple"]}
+                    keywords = nombres.get(simbolo.upper(), [simbolo.lower()])
+                    keywords += ["crypto","market","defi","blockchain"]
+                    palabras_pos = ["surge","rally","gain","bull","rise","high","adoption","approval","launch","partnership"]
+                    palabras_neg = ["crash","drop","fall","bear","low","hack","ban","regulation","fear","warning"]
+                    for titulo in titulos[:8]:
+                        tl = titulo.lower()
+                        sent = "neutral"
+                        if any(p in tl for p in palabras_pos): sent = "positiva"
+                        if any(p in tl for p in palabras_neg): sent = "negativa"
+                        noticias_raw.append({"titulo": titulo[:80], "sentimiento": sent, "url": ""})
+                    if len(noticias_raw) >= 8:
+                        break
+            except Exception as e:
+                log.warning(f"[WARN] RSS {feed_url}: {e}")
+                continue
 
-        if not datos or "results" not in datos:
+        if not noticias_raw:
             marcar_error("noticias")
             return {"score_ajuste": 0, "noticias": [], "fuente": "sin_datos",
                     "positivas": 0, "negativas": 0, "resumen": "Sin datos de noticias"}
 
-        positivas = negativas = 0
-        noticias_recientes = []
-        for n in datos["results"][:10]:
-            votos = n.get("votes", {})
-            pos   = votos.get("positive", 0)
-            neg   = votos.get("negative", 0)
-            if pos > neg:   positivas += 1
-            elif neg > pos: negativas += 1
-            noticias_recientes.append({
-                "titulo":      n.get("title", "")[:80],
-                "sentimiento": "positiva" if pos > neg else "negativa" if neg > pos else "neutral",
-                "url":         n.get("url", "")
-            })
-
-        total        = positivas + negativas
-        ratio_n      = (positivas - negativas) / total if total > 0 else 0
+        positivas = sum(1 for n in noticias_raw if n["sentimiento"] == "positiva")
+        negativas = sum(1 for n in noticias_raw if n["sentimiento"] == "negativa")
+        total     = len(noticias_raw)
+        ratio_n   = (positivas - negativas) / total if total > 0 else 0
         score_ajuste = round(ratio_n * 15, 1)
-
-        marcar_ok("noticias", "cryptopanic")
+        marcar_ok("noticias", "coindesk/cointelegraph")
         return {
-            "score_ajuste": score_ajuste,
-            "positivas":    positivas,
-            "negativas":    negativas,
-            "noticias":     noticias_recientes[:5],
-            "fuente":       "cryptopanic",
-            "resumen":      f"{positivas} positivas, {negativas} negativas de {total} recientes"
+            "score_ajuste": score_ajuste, "positivas": positivas, "negativas": negativas,
+            "noticias": noticias_raw[:5], "fuente": "coindesk/cointelegraph",
+            "resumen": f"{positivas} positivas, {negativas} negativas de {total} recientes"
         }
     except Exception as e:
         log.warning(f"[WARN] Noticias {simbolo}: {e}")
+        marcar_error("noticias")
         return {"score_ajuste": 0, "noticias": [], "fuente": "error",
                 "positivas": 0, "negativas": 0, "resumen": "Error al obtener noticias"}
 
