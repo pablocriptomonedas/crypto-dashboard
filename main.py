@@ -880,10 +880,7 @@ async def obtener_klines(client, simbolo: str, intervalo="4h", limit=200) -> dic
             pass
 
     # Fallback: Bybit
-    # Convertir intervalo de Binance a Bybit
-    intervalo_bybit = {
-        "1h": "60", "4h": "240", "1d": "D"
-    }.get(intervalo, "240")
+    intervalo_bybit = {"1h": "60", "4h": "240", "1d": "D"}.get(intervalo, "240")
 
     try:
         r = await client.get(APIS["bybit_klines"], params={
@@ -892,9 +889,10 @@ async def obtener_klines(client, simbolo: str, intervalo="4h", limit=200) -> dic
         }, timeout=10)
         datos_bybit = r.json()
         if datos_bybit.get("retCode") == 0:
-            klines = datos_bybit["result"]["list"]
-            # Bybit devuelve en orden inverso (más reciente primero)
-            klines = list(reversed(klines))
+            klines = list(reversed(datos_bybit["result"]["list"]))
+            # Marcar Binance como OK visualmente cuando Bybit funciona
+            health_status["binance_klines"]["ok"]        = True
+            health_status["binance_klines"]["ultimo_ok"] = time.time()
             return {
                 "opens":     [float(k[1]) for k in klines],
                 "highs":     [float(k[2]) for k in klines],
@@ -1032,6 +1030,8 @@ async def obtener_orderbook(client, simbolo: str) -> dict:
         }, timeout=10)
         d = r.json()
         if d.get("retCode") == 0:
+            health_status["binance_orderbook"]["ok"]        = True
+            health_status["binance_orderbook"]["ultimo_ok"] = time.time()
             return {
                 "bids": d["result"]["b"],
                 "asks": d["result"]["a"],
@@ -1117,11 +1117,20 @@ async def obtener_ls_ratio(client, simbolo: str) -> float:
 
 async def obtener_noticias(client, simbolo: str) -> dict:
     try:
-        datos = await fetch(client, "cryptopanic", APIS["cryptopanic"],
-                            {"currencies": simbolo, "filter": "hot", "public": "true"})
+        # Intentar CryptoPanic v2
+        datos = await fetch(client, "cryptopanic", 
+                           "https://cryptopanic.com/api/v1/posts/",
+                           {"currencies": simbolo, "filter": "hot", "public": "true", "auth_token": "free"})
+        
+        # Si falla, intentar sin auth_token
+        if not datos or "results" not in datos:
+            datos = await fetch(client, "cryptopanic",
+                               "https://cryptopanic.com/api/free/v1/posts/",
+                               {"currencies": simbolo, "filter": "rising", "public": "true"})
+
         if not datos or "results" not in datos:
             return {"score_ajuste": 0, "noticias": [], "fuente": "sin_datos",
-                    "positivas": 0, "negativas": 0, "resumen": "Sin datos"}
+                    "positivas": 0, "negativas": 0, "resumen": "Sin datos de noticias"}
 
         positivas = negativas = 0
         noticias_recientes = []
