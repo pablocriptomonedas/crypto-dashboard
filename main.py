@@ -55,7 +55,7 @@ INTERVALO_ACTUALIZACION = 300
 INTERVALO_HEALTH_CHECK  = 3600
 
 # URLs base de Binance — autenticado usa api.binance.com, sin auth usa api.binance.vision
-BINANCE_BASE     = "https://api.binance.vision"
+BINANCE_BASE     = "https://data-api.binance.vision"
 BINANCE_FUTURES  = "https://fapi.binance.com"
 
 APIS = {
@@ -1219,6 +1219,7 @@ async def obtener_noticias(client, simbolo: str) -> dict:
         feeds = [
             "https://www.coindesk.com/arc/outboundfeeds/rss/",
             "https://cointelegraph.com/rss",
+            "https://www.theblock.co/rss.xml",
         ]
         for feed_url in feeds:
             try:
@@ -1464,12 +1465,12 @@ def calcular_score_completo(klines_4h: dict, klines_1h: dict, klines_1d: dict,
     corr_score = btc_corr_s
 
     # ── SCORE BASE ────────────────────────────────────────────────────
-    raw_base = (tech_score    * .25 +
+    raw_base = (tech_score    * .27 +
                 libro_score   * .15 +
                 macro_score   * .15 +
                 sent_score    * .13 +
-                deriv_score   * .13 +
-                noticia_score * .10 +
+                deriv_score   * .15 +
+                noticia_score * .06 +
                 corr_score    * .09)
 
     score_base = round(raw_base * 100)
@@ -1485,7 +1486,7 @@ def calcular_score_completo(klines_4h: dict, klines_1h: dict, klines_1d: dict,
 
     capas = [
         {"nombre": "Tecnico 4h (RSI/StochRSI/MACD/SMA/BB/Velas/Divergencias)",
-         "peso": "25%", "score": round(tech_score * 100),
+         "peso": "27%", "score": round(tech_score * 100),
          "valor": f"RSI {rsi} | StochRSI {stoch} | MACD {macd['tendencia']} ({macd['cruce']}) | {patron['patron']} ({patron['fiabilidad']}%) | Div: {divergencia['tipo']}",
          "senal": "buy" if tech_score > .62 else "sell" if tech_score < .42 else "neutral"},
         {"nombre": "Libro ordenes (muros reales Binance)",
@@ -1501,11 +1502,11 @@ def calcular_score_completo(klines_4h: dict, klines_1h: dict, klines_1d: dict,
          "valor": f"F&G {fgv} ({fg['clasificacion']})",
          "senal": "buy" if sent_score > .62 else "sell" if sent_score < .42 else "neutral"},
         {"nombre": "Derivados (Funding/Long-Short ratio)",
-         "peso": "13%", "score": round(deriv_score * 100),
+         "peso": "15%", "score": round(deriv_score * 100),
          "valor": f"Funding {'+' if funding > 0 else ''}{funding}% | L/S {ls_ratio}",
          "senal": "buy" if deriv_score > .62 else "sell" if deriv_score < .42 else "neutral"},
-        {"nombre": "Noticias (CoinDesk/CoinTelegraph)",
-         "peso": "10%", "score": round(noticia_score * 100),
+        {"nombre": "Noticias (CoinDesk/TheBlock)",
+         "peso": "6%", "score": round(noticia_score * 100),
          "valor": noticias.get("resumen", "Sin datos"),
          "senal": "buy" if noticia_score > .62 else "sell" if noticia_score < .42 else "neutral"},
         {"nombre": "Correlacion BTC (ultimas 4h reales)",
@@ -1815,16 +1816,27 @@ async def api_diario_listar():
 
     for op in operaciones:
         if op.get("estado") == "abierta":
-            # Obtener precio actual
+            # Obtener precio actual con fallback a Bybit
+            precio = op.get("entrada", 0)
             try:
                 async with httpx.AsyncClient(timeout=5) as client:
                     r = await client.get(
                         f"{BINANCE_BASE}/api/v3/ticker/price",
-                        params={"symbol": f"{op['simbolo']}USDT"}
+                        params={"symbol": f"{op['simbolo']}USDT"},
+                        headers=binance_headers()
                     )
-                    precio = float(r.json()["price"])
+                    if r.status_code == 200:
+                        precio = float(r.json()["price"])
+                    else:
+                        r2 = await client.get(
+                            "https://api.bybit.com/v5/market/tickers",
+                            params={"category": "spot", "symbol": f"{op['simbolo']}USDT"}
+                        )
+                        d = r2.json()
+                        if d.get("retCode") == 0:
+                            precio = float(d["result"]["list"][0]["lastPrice"])
             except Exception:
-                precio = op.get("entrada", 0)
+                pass
 
             estado = calcular_estado_operacion(op, precio)
             resultado.append({**op, "estado_actual": estado})
@@ -1905,11 +1917,22 @@ async def monitorizar_operaciones():
                 continue
             try:
                 async with httpx.AsyncClient(timeout=5) as client:
+                    precio = op.get("entrada", 0)
                     r = await client.get(
                         f"{BINANCE_BASE}/api/v3/ticker/price",
-                        params={"symbol": f"{op['simbolo']}USDT"}
+                        params={"symbol": f"{op['simbolo']}USDT"},
+                        headers=binance_headers()
                     )
-                    precio = float(r.json()["price"])
+                    if r.status_code == 200:
+                        precio = float(r.json()["price"])
+                    else:
+                        r2 = await client.get(
+                            "https://api.bybit.com/v5/market/tickers",
+                            params={"category": "spot", "symbol": f"{op['simbolo']}USDT"}
+                        )
+                        d = r2.json()
+                        if d.get("retCode") == 0:
+                            precio = float(d["result"]["list"][0]["lastPrice"])
                 estado = calcular_estado_operacion(op, precio)
                 if estado["alerta"]:
                     alertas_activas.append({
