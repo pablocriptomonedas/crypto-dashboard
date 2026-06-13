@@ -1224,26 +1224,35 @@ async def obtener_noticias(client, simbolo: str) -> dict:
         for feed_url in feeds:
             try:
                 r = await client.get(feed_url, timeout=8,
-                                     headers={"Accept": "application/rss+xml, application/xml, text/xml"})
+                                     headers={"Accept": "application/rss+xml, application/xml, text/xml",
+                                              "User-Agent": "Mozilla/5.0"})
                 if r.status_code == 200:
                     contenido = r.text
-                    titulos = re.findall(r'<title><![CDATA[(.*?)]]></title>', contenido)
+                    # Intentar múltiples formatos de título en RSS/Atom
+                    titulos = re.findall(r'<title><!\[CDATA\[(.*?)\]\]></title>', contenido, re.DOTALL)
                     if not titulos:
-                        titulos = re.findall(r'<title>(.*?)</title>', contenido)
-                    titulos = [t for t in titulos[1:16]
-                               if len(t) > 20 and 'RSS' not in t and 'Feed' not in t]
+                        titulos = re.findall(r'<title[^>]*>(.*?)</title>', contenido, re.DOTALL)
+                    # Limpiar HTML entities y espacios
+                    titulos_limpios = []
+                    for t in titulos:
+                        t = t.strip()
+                        t = t.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>').replace('&quot;', '"').replace('&#39;', "'")
+                        t = re.sub(r'<[^>]+>', '', t).strip()  # eliminar tags HTML
+                        if len(t) > 15 and t not in ['RSS', 'Feed', 'CoinDesk', 'CoinTelegraph', 'The Block']:
+                            titulos_limpios.append(t)
+                    titulos = titulos_limpios[1:16]  # saltar el título del feed
                     nombres = {"BTC": ["bitcoin","btc"],"ETH": ["ethereum","eth"],
                                "SOL": ["solana","sol"],"XRP": ["xrp","ripple"]}
                     keywords = nombres.get(simbolo.upper(), [simbolo.lower()])
-                    keywords += ["crypto","market","defi","blockchain"]
-                    palabras_pos = ["surge","rally","gain","bull","rise","high","adoption","approval","launch","partnership"]
-                    palabras_neg = ["crash","drop","fall","bear","low","hack","ban","regulation","fear","warning"]
+                    keywords += ["crypto","market","defi","blockchain","token","coin"]
+                    palabras_pos = ["surge","rally","gain","bull","rise","high","adoption","approval","launch","partnership","record","all-time"]
+                    palabras_neg = ["crash","drop","fall","bear","low","hack","ban","regulation","fear","warning","loss","scam","fraud"]
                     for titulo in titulos[:8]:
                         tl = titulo.lower()
                         sent = "neutral"
                         if any(p in tl for p in palabras_pos): sent = "positiva"
                         if any(p in tl for p in palabras_neg): sent = "negativa"
-                        noticias_raw.append({"titulo": titulo[:80], "sentimiento": sent, "url": ""})
+                        noticias_raw.append({"titulo": titulo[:90], "sentimiento": sent, "url": ""})
                     if len(noticias_raw) >= 8:
                         break
             except Exception as e:
