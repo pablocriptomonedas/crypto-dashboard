@@ -1474,13 +1474,16 @@ def calcular_score_completo(klines_4h: dict, klines_1h: dict, klines_1d: dict,
     corr_score = btc_corr_s
 
     # ── SCORE BASE ────────────────────────────────────────────────────
+    # Pesos calibrados para swing trading 1-7 días:
+    # Libro órdenes y Derivados tienen más peso por ser datos tiempo real
+    # Macro reducida al 8% porque cambia lentamente (DXY, Fed)
     raw_base = (tech_score    * .27 +
-                libro_score   * .15 +
-                macro_score   * .15 +
+                libro_score   * .18 +
+                macro_score   * .08 +
                 sent_score    * .13 +
-                deriv_score   * .15 +
+                deriv_score   * .18 +
                 noticia_score * .06 +
-                corr_score    * .09)
+                corr_score    * .10)
 
     score_base = round(raw_base * 100)
 
@@ -1499,11 +1502,11 @@ def calcular_score_completo(klines_4h: dict, klines_1h: dict, klines_1d: dict,
          "valor": f"RSI {rsi} | StochRSI {stoch} | MACD {macd['tendencia']} ({macd['cruce']}) | {patron['patron']} ({patron['fiabilidad']}%) | Div: {divergencia['tipo']}",
          "senal": "buy" if tech_score > .62 else "sell" if tech_score < .42 else "neutral"},
         {"nombre": "Libro ordenes (muros reales Binance)",
-         "peso": "15%", "score": round(libro_score * 100),
+         "peso": "18%", "score": round(libro_score * 100),
          "valor": f"Ratio C/V: {ratio_cv} | {ob.get('descripcion','')}",
          "senal": "buy" if libro_score > .62 else "sell" if libro_score < .42 else "neutral"},
         {"nombre": "Macro (DXY/Fed reales + Ciclo dinamico)",
-         "peso": "15%", "score": round(macro_score * 100),
+         "peso": "8%", "score": round(macro_score * 100),
          "valor": f"DXY {dxy} ({dxy_fuente}) | Fed {fed}% | {ciclo} ({ciclo_pct}% rango) | BTC dom {dominancia_btc}%",
          "senal": "buy" if macro_score > .62 else "sell" if macro_score < .42 else "neutral"},
         {"nombre": "Sentimiento (Fear & Greed real)",
@@ -1511,7 +1514,7 @@ def calcular_score_completo(klines_4h: dict, klines_1h: dict, klines_1d: dict,
          "valor": f"F&G {fgv} ({fg['clasificacion']})",
          "senal": "buy" if sent_score > .62 else "sell" if sent_score < .42 else "neutral"},
         {"nombre": "Derivados (Funding/Long-Short ratio)",
-         "peso": "15%", "score": round(deriv_score * 100),
+         "peso": "18%", "score": round(deriv_score * 100),
          "valor": f"Funding {'+' if funding > 0 else ''}{funding}% | L/S {ls_ratio}",
          "senal": "buy" if deriv_score > .62 else "sell" if deriv_score < .42 else "neutral"},
         {"nombre": "Noticias (CoinDesk/TheBlock)",
@@ -1519,7 +1522,7 @@ def calcular_score_completo(klines_4h: dict, klines_1h: dict, klines_1d: dict,
          "valor": noticias.get("resumen", "Sin datos"),
          "senal": "buy" if noticia_score > .62 else "sell" if noticia_score < .42 else "neutral"},
         {"nombre": "Correlacion BTC (ultimas 4h reales)",
-         "peso": "9%", "score": round(corr_score * 100),
+         "peso": "10%", "score": round(corr_score * 100),
          "valor": f"BTC 4h: {'+' if btc_cambio_4h > 0 else ''}{btc_cambio_4h}%",
          "senal": "buy" if corr_score > .62 else "sell" if corr_score < .42 else "neutral"},
     ]
