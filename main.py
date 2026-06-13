@@ -1439,8 +1439,8 @@ def calcular_score_completo(klines_4h: dict, klines_1h: dict, klines_1d: dict,
               .50 if dxy < 103 else .35 if dxy < 105 else .18
     fed_s   = .78 if fed < 3.5 else .65 if fed < 4.25 else \
               .50 if fed < 5.0 else .35 if fed < 5.75 else .20
-    ciclo_s = .88 if ciclo == "accumulation" else .68 if ciclo == "bull" else \
-              .32 if ciclo == "distribution" else .18
+    ciclo_s = .85 if ciclo == "accumulation" else .70 if ciclo == "bull" else \
+              .45 if ciclo == "distribution" else .35
     dom_s   = .60 if dominancia_btc > 55 else .50 if dominancia_btc > 45 else .40
     macro_score = dxy_s * .30 + fed_s * .30 + ciclo_s * .25 + dom_s * .15
 
@@ -1490,41 +1490,41 @@ def calcular_score_completo(klines_4h: dict, klines_1h: dict, klines_1d: dict,
     # ── BONUS/PENALIZACIÓN MULTI-TIMEFRAME ────────────────────────────
     score_final = max(5, min(95, score_base + mtf["bonus"]))
 
-    if   score_final >= 72: accion = "COMPRAR"
-    elif score_final >= 62: accion = "Posible compra"
-    elif score_final <= 28: accion = "VENDER"
-    elif score_final <= 38: accion = "Posible venta"
+    if   score_final >= 68: accion = "COMPRAR"
+    elif score_final >= 58: accion = "Posible compra"
+    elif score_final <= 32: accion = "VENDER"
+    elif score_final <= 42: accion = "Posible venta"
     else:                   accion = "ESPERAR"
 
     capas = [
         {"nombre": "Tecnico 4h (RSI/StochRSI/MACD/SMA/BB/Velas/Divergencias)",
          "peso": "27%", "score": round(tech_score * 100),
          "valor": f"RSI {rsi} | StochRSI {stoch} | MACD {macd['tendencia']} ({macd['cruce']}) | {patron['patron']} ({patron['fiabilidad']}%) | Div: {divergencia['tipo']}",
-         "senal": "buy" if tech_score > .62 else "sell" if tech_score < .42 else "neutral"},
+         "senal": "buy" if tech_score > .58 else "sell" if tech_score < .42 else "neutral"},
         {"nombre": "Libro ordenes (muros reales Binance)",
          "peso": "18%", "score": round(libro_score * 100),
          "valor": f"Ratio C/V: {ratio_cv} | {ob.get('descripcion','')}",
-         "senal": "buy" if libro_score > .62 else "sell" if libro_score < .42 else "neutral"},
+         "senal": "buy" if libro_score > .58 else "sell" if libro_score < .42 else "neutral"},
         {"nombre": "Macro (DXY/Fed reales + Ciclo dinamico)",
          "peso": "8%", "score": round(macro_score * 100),
          "valor": f"DXY {dxy} ({dxy_fuente}) | Fed {fed}% | {ciclo} ({ciclo_pct}% rango) | BTC dom {dominancia_btc}%",
-         "senal": "buy" if macro_score > .62 else "sell" if macro_score < .42 else "neutral"},
+         "senal": "buy" if macro_score > .58 else "sell" if macro_score < .42 else "neutral"},
         {"nombre": "Sentimiento (Fear & Greed real)",
          "peso": "13%", "score": round(sent_score * 100),
          "valor": f"F&G {fgv} ({fg['clasificacion']})",
-         "senal": "buy" if sent_score > .62 else "sell" if sent_score < .42 else "neutral"},
+         "senal": "buy" if sent_score > .58 else "sell" if sent_score < .42 else "neutral"},
         {"nombre": "Derivados (Funding/Long-Short ratio)",
          "peso": "18%", "score": round(deriv_score * 100),
          "valor": f"Funding {'+' if funding > 0 else ''}{funding}% | L/S {ls_ratio}",
-         "senal": "buy" if deriv_score > .62 else "sell" if deriv_score < .42 else "neutral"},
+         "senal": "buy" if deriv_score > .58 else "sell" if deriv_score < .42 else "neutral"},
         {"nombre": "Noticias (CoinDesk/TheBlock)",
          "peso": "6%", "score": round(noticia_score * 100),
          "valor": noticias.get("resumen", "Sin datos"),
-         "senal": "buy" if noticia_score > .62 else "sell" if noticia_score < .42 else "neutral"},
+         "senal": "buy" if noticia_score > .58 else "sell" if noticia_score < .42 else "neutral"},
         {"nombre": "Correlacion BTC (ultimas 4h reales)",
          "peso": "10%", "score": round(corr_score * 100),
          "valor": f"BTC 4h: {'+' if btc_cambio_4h > 0 else ''}{btc_cambio_4h}%",
-         "senal": "buy" if corr_score > .62 else "sell" if corr_score < .42 else "neutral"},
+         "senal": "buy" if corr_score > .58 else "sell" if corr_score < .42 else "neutral"},
     ]
 
     bull_count = sum(1 for c in capas if c["senal"] == "buy")
