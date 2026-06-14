@@ -857,7 +857,9 @@ def calcular_gestion_operacion(precio: float, precios: list, highs: list,
     # ── VALIDACIÓN CRÍTICA ───────────────────────────────────────────
     # Garantizar que todos los TPs están POR ENCIMA de la entrada
     # y en orden correcto TP1 < TP2 < TP3
-    tp1 = max(tp1, round(precio * 1.005, 6))   # mínimo +0.5% sobre entrada
+    # TP1 mínimo: proporcional al riesgo (riesgo × 1.272) para mantener ratio coherente
+    tp1_minimo = round(precio + riesgo_abs * 1.272, 6)
+    tp1 = max(tp1, tp1_minimo)
     tp2 = max(tp2, round(tp1 * 1.005, 6))       # tp2 siempre > tp1
     tp3 = max(tp3, round(tp2 * 1.005, 6))       # tp3 siempre > tp2
 
