@@ -1362,16 +1362,33 @@ def calcular_score_completo(klines_4h: dict, klines_1h: dict, klines_1d: dict,
         rsi, tendencia_sma
     )
 
-    rsi_s   = .92 if rsi < 28 else .80 if rsi < 38 else .62 if rsi < 48 else \
-              .50 if rsi < 55 else .38 if rsi < 65 else .20 if rsi < 72 else .08
+    # RSI con penalización si el volumen no confirma
+    # El backtesting demostró que RSI bajo sin volumen = trampa bajista
+    # RSI bajo CON volumen creciente = suelo real
+    rsi_s_base = .92 if rsi < 28 else .80 if rsi < 38 else .62 if rsi < 48 else \
+                 .50 if rsi < 55 else .38 if rsi < 65 else .20 if rsi < 72 else .08
+
+    # Penalización: RSI sobrevendido sin volumen que confirme = señal falsa
+    # El backtesting mostró que RSI < 30 sin volumen acierta solo el 25%
+    if rsi < 35 and vol_ratio < 1.0:
+        # Volumen bajo en sobreventa = probable continuación bajista
+        rsi_s = rsi_s_base * 0.70   # penalizar un 30%
+    elif rsi < 35 and vol_ratio >= 1.5:
+        # Volumen alto en sobreventa = suelo potencial real
+        rsi_s = min(1.0, rsi_s_base * 1.15)  # bonificar un 15%
+    else:
+        rsi_s = rsi_s_base
+
     stoch_s = .85 if stoch < 20 else .65 if stoch < 40 else .50 if stoch < 60 else \
               .35 if stoch < 80 else .15
 
-    # MACD con cruce real
+    # MACD con cruce real — el backtesting demostró que el cruce MACD
+    # es el indicador más fiable (53.8% acierto vs 35% media)
+    # Por eso se le da más peso en los pesos internos del scoring técnico
     if macd["cruce"] == "alcista":
-        macd_s = .90
+        macd_s = .95   # antes .90 — cruce alcista es señal muy fiable
     elif macd["cruce"] == "bajista":
-        macd_s = .12
+        macd_s = .08   # antes .12 — cruce bajista es señal muy negativa
     elif macd["tendencia"] == "alcista":
         macd_s = .72
     elif macd["tendencia"] == "bajista":
@@ -1408,14 +1425,16 @@ def calcular_score_completo(klines_4h: dict, klines_1h: dict, klines_1d: dict,
         patron_peso = 0.00   # no aporta ni resta
 
     # Redistribuir pesos con patron integrado
-    # Con patron confirmado:    RSI 21% + StochRSI 11% + MACD 23% + Trend 21% + BB 12% + Vol 5% + Patron 7% = 100%
-    # Sin patron confirmado:    RSI 22% + StochRSI 12% + MACD 25% + Trend 22% + BB 13% + Vol 6% = 100%
+    # MACD sube de 23-25% a 28-30% basado en backtesting (53.8% acierto vs 35% media)
+    # RSI baja de 21-22% a 17-18% porque sin volumen es poco fiable
+    # Con patron confirmado:    RSI 17% + StochRSI 10% + MACD 28% + Trend 21% + BB 12% + Vol 5% + Patron 7% = 100%
+    # Sin patron confirmado:    RSI 18% + StochRSI 11% + MACD 30% + Trend 22% + BB 13% + Vol 6% = 100%
     if patron_peso > 0:
-        tech_score_base = (rsi_s   * .21 + stoch_s * .11 + macd_s  * .23 +
+        tech_score_base = (rsi_s   * .17 + stoch_s * .10 + macd_s  * .28 +
                            trend_s * .21 + bb_s    * .12 + vol_s   * .05 +
                            patron_s * patron_peso)
     else:
-        tech_score_base = (rsi_s   * .22 + stoch_s * .12 + macd_s  * .25 +
+        tech_score_base = (rsi_s   * .18 + stoch_s * .11 + macd_s  * .30 +
                            trend_s * .22 + bb_s    * .13 + vol_s   * .06)
 
     tech_score = min(1.0, max(0.0, tech_score_base + div_ajuste))
@@ -1492,11 +1511,19 @@ def calcular_score_completo(klines_4h: dict, klines_1h: dict, klines_1d: dict,
     # ── BONUS/PENALIZACIÓN MULTI-TIMEFRAME ────────────────────────────
     score_final = max(5, min(95, score_base + mtf["bonus"]))
 
-    if   score_final >= 68: accion = "COMPRAR"
-    elif score_final >= 58: accion = "Posible compra"
-    elif score_final <= 32: accion = "VENDER"
-    elif score_final <= 42: accion = "Posible venta"
-    else:                   accion = "ESPERAR"
+    # ── UMBRALES DE DECISIÓN SEGÚN TENDENCIA DIARIA ───────────────────
+    # Si el diario es bajista, exigimos más para comprar (72% en vez de 68%)
+    # porque el backtesting demostró que las compras contra tendencia bajista
+    # fallan el 75% de las veces
+    tendencia_diaria = tf_1d["tendencia"]
+    umbral_compra    = 72 if tendencia_diaria == "bajista" else 68
+    umbral_pos_compra= 65 if tendencia_diaria == "bajista" else 58
+
+    if   score_final >= umbral_compra:    accion = "COMPRAR"
+    elif score_final >= umbral_pos_compra: accion = "Posible compra"
+    elif score_final <= 32:               accion = "VENDER"
+    elif score_final <= 42:               accion = "Posible venta"
+    else:                                 accion = "ESPERAR"
 
     capas = [
         {"nombre": "Tecnico 4h (RSI/StochRSI/MACD/SMA/BB/Velas/Divergencias)",
