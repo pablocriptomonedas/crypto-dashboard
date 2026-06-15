@@ -173,28 +173,43 @@ async def enviar_telegram(mensaje: str):
                 log.warning(f"[WARN] Telegram envío fallido a {chat_id}: {e}")
 
 async def procesar_updates_telegram():
-    """Procesa los mensajes entrantes de Telegram para registrar usuarios."""
+    """Procesa los mensajes entrantes de Telegram para registrar usuarios.
+    Usa offset para no procesar el mismo mensaje dos veces."""
     if not TELEGRAM_ACTIVO:
         return
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
         async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get(url, params={"timeout": 0})
+            r = await client.get(url, params={"timeout": 0, "offset": -1})
             updates = r.json().get("result", [])
+            if not updates:
+                return
+
+            # Procesar solo el último mensaje
+            ultimo_update_id = None
             for update in updates:
                 msg = update.get("message", {})
                 text = msg.get("text", "")
                 chat_id = msg.get("chat", {}).get("id")
+                ultimo_update_id = update.get("update_id")
+
                 if text == "/start" and chat_id:
-                    guardar_chat_id(chat_id)
-                    await client.post(
-                        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                        json={
-                            "chat_id": chat_id,
-                            "text": "✅ <b>Dashboard Crypto conectado</b>\n\nRecibirás alertas cuando el sistema detecte señales de compra en modo conservador (score ≥ 68% con tendencia diaria alcista).",
-                            "parse_mode": "HTML"
-                        }
-                    )
+                    ids_existentes = cargar_chat_ids()
+                    if chat_id not in ids_existentes:
+                        guardar_chat_id(chat_id)
+                        await client.post(
+                            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                            json={
+                                "chat_id": chat_id,
+                                "text": "✅ <b>Dashboard Crypto conectado</b>\n\nRecibirás alertas cuando el sistema detecte señales de compra en modo conservador (score ≥ 68% con tendencia diaria alcista).",
+                                "parse_mode": "HTML"
+                            }
+                        )
+
+            # Marcar todos los mensajes como procesados
+            if ultimo_update_id is not None:
+                await client.get(url, params={"timeout": 0, "offset": ultimo_update_id + 1})
+
     except Exception as e:
         log.warning(f"[WARN] Telegram updates: {e}")
 
