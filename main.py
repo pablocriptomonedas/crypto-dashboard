@@ -45,10 +45,20 @@ BINANCE_API_KEY    = os.environ.get("BINANCE_API_KEY", "")
 BINANCE_SECRET_KEY = os.environ.get("BINANCE_SECRET_KEY", "")
 BINANCE_AUTENTICADO = bool(BINANCE_API_KEY and BINANCE_SECRET_KEY)
 
+# Telegram
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
+TELEGRAM_ACTIVO = bool(TELEGRAM_TOKEN)
+TELEGRAM_CHAT_IDS_FILE = "data/telegram_chats.json"
+
 if BINANCE_AUTENTICADO:
     log.info("[OK] Binance API key configurada — usando endpoints autenticados")
 else:
     log.warning("[WARN] Binance API key no configurada — usando endpoints públicos con fallback Bybit")
+
+if TELEGRAM_ACTIVO:
+    log.info("[OK] Telegram configurado — alertas activas en modo conservador")
+else:
+    log.warning("[WARN] Telegram no configurado — sin alertas por mensaje")
 
 MONEDAS_DEFAULT = ["BTC", "ETH", "SOL", "XRP"]
 INTERVALO_ACTUALIZACION = 300
@@ -120,6 +130,131 @@ def marcar_error(clave: str):
     if clave in health_status:
         health_status[clave]["ok"]      = False
         health_status[clave]["errores"] += 1
+
+# ── TELEGRAM ──────────────────────────────────────────────────────────
+
+def cargar_chat_ids() -> list:
+    """Carga los chat IDs de Telegram registrados."""
+    try:
+        if os.path.exists(TELEGRAM_CHAT_IDS_FILE):
+            with open(TELEGRAM_CHAT_IDS_FILE, "r") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return []
+
+def guardar_chat_id(chat_id: int):
+    """Guarda un nuevo chat ID si no existe ya."""
+    ids = cargar_chat_ids()
+    if chat_id not in ids:
+        ids.append(chat_id)
+        os.makedirs("data", exist_ok=True)
+        with open(TELEGRAM_CHAT_IDS_FILE, "w") as f:
+            json.dump(ids, f)
+        log.info(f"[OK] Telegram: nuevo usuario registrado — chat_id {chat_id}")
+
+async def enviar_telegram(mensaje: str):
+    """Envía un mensaje a todos los usuarios registrados."""
+    if not TELEGRAM_ACTIVO:
+        return
+    chat_ids = cargar_chat_ids()
+    if not chat_ids:
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    async with httpx.AsyncClient(timeout=10) as client:
+        for chat_id in chat_ids:
+            try:
+                await client.post(url, json={
+                    "chat_id":    chat_id,
+                    "text":       mensaje,
+                    "parse_mode": "HTML"
+                })
+            except Exception as e:
+                log.warning(f"[WARN] Telegram envío fallido a {chat_id}: {e}")
+
+async def procesar_updates_telegram():
+    """Procesa los mensajes entrantes de Telegram para registrar usuarios."""
+    if not TELEGRAM_ACTIVO:
+        return
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(url, params={"timeout": 0})
+            updates = r.json().get("result", [])
+            for update in updates:
+                msg = update.get("message", {})
+                text = msg.get("text", "")
+                chat_id = msg.get("chat", {}).get("id")
+                if text == "/start" and chat_id:
+                    guardar_chat_id(chat_id)
+                    await client.post(
+                        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                        json={
+                            "chat_id": chat_id,
+                            "text": "✅ <b>Dashboard Crypto conectado</b>\n\nRecibirás alertas cuando el sistema detecte señales de compra en modo conservador (score ≥ 68% con tendencia diaria alcista).",
+                            "parse_mode": "HTML"
+                        }
+                    )
+    except Exception as e:
+        log.warning(f"[WARN] Telegram updates: {e}")
+
+# Últimas alertas enviadas para evitar spam
+_ultimas_alertas: dict = {}
+
+async def evaluar_y_alertar_telegram(simbolo: str, resultado: dict):
+    """
+    Evalúa si hay que enviar alerta de Telegram.
+    Solo en modo conservador: score ≥ 68% con tendencia diaria alcista.
+    Evita spam: no manda la misma alerta dos veces en menos de 4 horas.
+    """
+    if not TELEGRAM_ACTIVO:
+        return
+    score = resultado.get("score", {})
+    score_val = score.get("score", 0)
+    accion = score.get("accion", "")
+    mtf = score.get("mtf", {})
+    tendencia_1d = mtf.get("tf_1d", {}).get("tendencia", "neutral")
+    precio = resultado.get("precio", 0)
+    gestion = resultado.get("gestion", {})
+
+    # Solo alertar en modo conservador: COMPRAR con tendencia diaria alcista
+    if accion != "COMPRAR" or tendencia_1d != "alcista":
+        return
+
+    # Evitar spam: misma moneda, misma señal, menos de 4 horas
+    clave = f"{simbolo}_compra"
+    ahora = time.time()
+    if clave in _ultimas_alertas and ahora - _ultimas_alertas[clave] < 14400:
+        return
+
+    _ultimas_alertas[clave] = ahora
+
+    rsi = round(score.get("rsi", 0), 1)
+    macd = score.get("macd", {})
+    cruce = macd.get("cruce", "ninguno")
+    sl = gestion.get("stop_loss", 0)
+    tp1 = gestion.get("tp1", 0)
+    tp2 = gestion.get("tp2", 0)
+    riesgo_pct = gestion.get("riesgo_pct", 0)
+
+    mensaje = (
+        f"🟢 <b>SEÑAL DE COMPRA — {simbolo}</b>\n\n"
+        f"📊 Score: <b>{score_val}%</b>\n"
+        f"💰 Precio: <b>${round(precio, 4)}</b>\n"
+        f"📈 Tendencia diaria: <b>alcista ✅</b>\n\n"
+        f"<b>Indicadores:</b>\n"
+        f"• RSI: {rsi}\n"
+        f"• MACD: {cruce if cruce != 'ninguno' else macd.get('tendencia','—')}\n\n"
+        f"<b>Gestión:</b>\n"
+        f"• Stop Loss: ${round(sl, 4)} (-{riesgo_pct}%)\n"
+        f"• TP1: ${round(tp1, 4)}\n"
+        f"• TP2: ${round(tp2, 4)}\n\n"
+        f"⚠️ Aplica siempre el stop loss. No es asesoramiento financiero."
+    )
+
+    await enviar_telegram(mensaje)
+    log.info(f"[OK] Telegram: alerta COMPRA {simbolo} enviada — score {score_val}%")
+
 
 app = FastAPI(title="Crypto Expert Dashboard v7")
 
@@ -2011,12 +2146,20 @@ async def loop_actualizacion():
     while True:
         log.info("=== Actualizando datos de mercado ===")
         resultados = {}
+
+        # Procesar mensajes entrantes de Telegram (registro de nuevos usuarios)
+        await procesar_updates_telegram()
+
         for simbolo in MONEDAS_DEFAULT:
             try:
                 resultado = await analizar_moneda(simbolo)
                 resultados[simbolo] = resultado
                 mtf_alin = resultado["score"]["mtf"]["alineacion"]
                 log.info(f"[OK] {simbolo}: Score {resultado['score']['score']}% ({resultado['score']['accion']}) | MTF: {mtf_alin}")
+
+                # Evaluar si hay que enviar alerta de Telegram (solo modo conservador)
+                await evaluar_y_alertar_telegram(simbolo, resultado)
+
             except Exception as e:
                 log.error(f"[ERROR] {simbolo}: {e}")
 
@@ -2056,6 +2199,29 @@ async def api_analizar(simbolo: str, capital: float = 1000):
 
 
 @app.get("/api/health")
+@app.get("/api/telegram/status")
+async def telegram_status():
+    """Estado de Telegram y usuarios registrados."""
+    chat_ids = cargar_chat_ids()
+    return {
+        "activo":   TELEGRAM_ACTIVO,
+        "usuarios": len(chat_ids),
+        "token_configurado": bool(TELEGRAM_TOKEN),
+    }
+
+@app.get("/api/telegram/test")
+async def telegram_test():
+    """Envía un mensaje de prueba a todos los usuarios registrados."""
+    if not TELEGRAM_ACTIVO:
+        return {"ok": False, "error": "Telegram no configurado"}
+    await procesar_updates_telegram()
+    chat_ids = cargar_chat_ids()
+    if not chat_ids:
+        return {"ok": False, "error": "No hay usuarios registrados. Escribe /start al bot primero."}
+    await enviar_telegram("✅ <b>Test de conexión exitoso</b>\n\nEl dashboard está funcionando correctamente.")
+    return {"ok": True, "usuarios": len(chat_ids)}
+
+
 async def api_health():
     return {
         "status": "ok" if all(e["ok"] for e in health_status.values()) else "degradado",
