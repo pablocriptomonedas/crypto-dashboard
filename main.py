@@ -2199,6 +2199,13 @@ async def api_analizar(simbolo: str, capital: float = 1000):
 
 
 @app.get("/api/health")
+async def api_health():
+    return {
+        "status": "ok" if all(e["ok"] for e in health_status.values()) else "degradado",
+        "apis":   health_status,
+        "timestamp": datetime.now().isoformat(),
+    }
+
 @app.get("/api/telegram/status")
 async def telegram_status():
     """Estado de Telegram y usuarios registrados."""
@@ -2220,14 +2227,6 @@ async def telegram_test():
         return {"ok": False, "error": "No hay usuarios registrados. Escribe /start al bot primero."}
     await enviar_telegram("✅ <b>Test de conexión exitoso</b>\n\nEl dashboard está funcionando correctamente.")
     return {"ok": True, "usuarios": len(chat_ids)}
-
-
-async def api_health():
-    return {
-        "status": "ok" if all(e["ok"] for e in health_status.values()) else "degradado",
-        "apis":   health_status,
-        "timestamp": datetime.now().isoformat(),
-    }
 
 
 @app.get("/", response_class=HTMLResponse)
