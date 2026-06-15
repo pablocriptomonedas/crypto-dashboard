@@ -1889,7 +1889,133 @@ async def broadcast(datos: dict):
 # Gestión activa de posiciones abiertas con alertas en tiempo real
 # ══════════════════════════════════════════════════════════════════════
 
-DIARIO_FILE = "data/diario_operaciones.json"
+DIARIO_FILE   = "data/diario_operaciones.json"
+SEÑALES_FILE  = "data/señales_historico.json"
+
+def cargar_señales() -> list:
+    """Carga el histórico de señales."""
+    try:
+        if os.path.exists(SEÑALES_FILE):
+            with open(SEÑALES_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return []
+
+def guardar_señal(señal: dict):
+    """Guarda una señal en el histórico."""
+    try:
+        señales = cargar_señales()
+        señales.append(señal)
+        # Mantener máximo 5000 señales para no ocupar demasiado espacio
+        if len(señales) > 5000:
+            señales = señales[-5000:]
+        with open(SEÑALES_FILE, "w", encoding="utf-8") as f:
+            json.dump(señales, f, ensure_ascii=False)
+    except Exception as e:
+        log.warning(f"[WARN] Error guardando señal: {e}")
+
+def registrar_señal_automatica(simbolo: str, resultado: dict):
+    """
+    Registra automáticamente cada señal que genera el sistema.
+    Captura todas las señales independientemente de si el usuario opera o no.
+    Esto permite calibrar el sistema con datos reales de mercado.
+    """
+    try:
+        score_data = resultado.get("score", {})
+        accion = score_data.get("accion", "ESPERAR")
+
+        # Solo registrar señales relevantes, no ESPERAR genérico
+        if accion == "ESPERAR":
+            return
+
+        mtf = score_data.get("mtf", {})
+        gestion = resultado.get("gestion", {})
+
+        señal = {
+            "fecha":          datetime.now().isoformat(),
+            "simbolo":        simbolo,
+            "accion":         accion,
+            "score":          score_data.get("score", 0),
+            "precio":         round(resultado.get("precio", 0), 6),
+            "rsi":            score_data.get("rsi", 0),
+            "macd":           score_data.get("macd", {}).get("cruce", "ninguno"),
+            "macd_tendencia": score_data.get("macd", {}).get("tendencia", "neutral"),
+            "tendencia_1h":   mtf.get("tf_1h", {}).get("tendencia", "neutral"),
+            "tendencia_4h":   mtf.get("tf_4h", {}).get("tendencia", "neutral"),
+            "tendencia_1d":   mtf.get("tf_1d", {}).get("tendencia", "neutral"),
+            "alineacion_mtf": mtf.get("alineacion", "mixta"),
+            "bonus_mtf":      score_data.get("bonus_mtf", 0),
+            "stop_loss":      gestion.get("stop_loss", 0),
+            "tp1":            gestion.get("tp1", 0),
+            "tp2":            gestion.get("tp2", 0),
+            "tp3":            gestion.get("tp3", 0),
+            "ratio":          gestion.get("ratio_riesgo", 0),
+            "fear_greed":     resultado.get("fear_greed", {}).get("valor", 50),
+            "funding":        score_data.get("funding", 0),
+            "ls_ratio":       score_data.get("ls_ratio", 1.0),
+            # Campos para calcular el resultado posterior (se rellenarán en futuros ciclos)
+            "precio_24h":     None,
+            "precio_3d":      None,
+            "precio_7d":      None,
+            "ret_24h":        None,
+            "ret_3d":         None,
+            "ret_7d":         None,
+            "evaluado":       False,
+        }
+        guardar_señal(señal)
+    except Exception as e:
+        log.warning(f"[WARN] Error registrando señal {simbolo}: {e}")
+
+def evaluar_señales_pendientes(precios_actuales: dict):
+    """
+    Revisa las señales pendientes de evaluación y calcula los retornos
+    a 24h, 3 días y 7 días cuando ya ha pasado el tiempo suficiente.
+    """
+    try:
+        señales = cargar_señales()
+        ahora = datetime.now()
+        modificado = False
+
+        for s in señales:
+            if s.get("evaluado"):
+                continue
+            try:
+                fecha_señal = datetime.fromisoformat(s["fecha"])
+                horas = (ahora - fecha_señal).total_seconds() / 3600
+                simbolo = s["simbolo"]
+                precio_entrada = s["precio"]
+                precio_actual = precios_actuales.get(simbolo, 0)
+
+                if precio_actual <= 0 or precio_entrada <= 0:
+                    continue
+
+                if horas >= 24 and s["ret_24h"] is None:
+                    ret = round((precio_actual - precio_entrada) / precio_entrada * 100, 2)
+                    s["precio_24h"] = precio_actual
+                    s["ret_24h"] = ret
+                    modificado = True
+
+                if horas >= 72 and s["ret_3d"] is None:
+                    ret = round((precio_actual - precio_entrada) / precio_entrada * 100, 2)
+                    s["precio_3d"] = precio_actual
+                    s["ret_3d"] = ret
+                    modificado = True
+
+                if horas >= 168 and s["ret_7d"] is None:
+                    ret = round((precio_actual - precio_entrada) / precio_entrada * 100, 2)
+                    s["precio_7d"] = precio_actual
+                    s["ret_7d"] = ret
+                    s["evaluado"] = True
+                    modificado = True
+            except Exception:
+                continue
+
+        if modificado:
+            with open(SEÑALES_FILE, "w", encoding="utf-8") as f:
+                json.dump(señales, f, ensure_ascii=False)
+    except Exception as e:
+        log.warning(f"[WARN] Error evaluando señales: {e}")
 
 class NuevaOperacion(BaseModel):
     simbolo:    str
@@ -2172,11 +2298,18 @@ async def loop_actualizacion():
                 mtf_alin = resultado["score"]["mtf"]["alineacion"]
                 log.info(f"[OK] {simbolo}: Score {resultado['score']['score']}% ({resultado['score']['accion']}) | MTF: {mtf_alin}")
 
+                # Registrar señal automáticamente en el histórico
+                registrar_señal_automatica(simbolo, resultado)
+
                 # Evaluar si hay que enviar alerta de Telegram (solo modo conservador)
                 await evaluar_y_alertar_telegram(simbolo, resultado)
 
             except Exception as e:
                 log.error(f"[ERROR] {simbolo}: {e}")
+
+        # Evaluar retornos de señales anteriores
+        precios_actuales = {s: resultados[s].get("precio", 0) for s in resultados}
+        evaluar_señales_pendientes(precios_actuales)
 
         estado_salud = {
             nombre: {
@@ -2211,6 +2344,42 @@ async def health_check_periodico():
 @app.get("/api/analizar/{simbolo}")
 async def api_analizar(simbolo: str, capital: float = 1000):
     return await analizar_moneda(simbolo.upper(), capital)
+
+
+@app.get("/api/señales/descargar")
+async def descargar_señales():
+    """Descarga el histórico completo de señales para calibración."""
+    from fastapi.responses import JSONResponse
+    señales = cargar_señales()
+    evaluadas = [s for s in señales if s.get("evaluado")]
+    pendientes = [s for s in señales if not s.get("evaluado")]
+
+    # Resumen estadístico
+    compras = [s for s in evaluadas if "COMPRA" in s.get("accion","")]
+    ventas  = [s for s in evaluadas if "VENTA" in s.get("accion","")]
+
+    def tasa(lista, campo):
+        validos = [s for s in lista if s.get(campo) is not None]
+        if not validos: return None
+        aciertos = sum(1 for s in validos if s.get(campo,0) > 0)
+        return round(aciertos/len(validos)*100,1)
+
+    resumen = {
+        "total_señales":    len(señales),
+        "evaluadas":        len(evaluadas),
+        "pendientes":       len(pendientes),
+        "señales_compra":   len(compras),
+        "señales_venta":    len(ventas),
+        "tasa_acierto_compra_24h": tasa(compras, "ret_24h"),
+        "tasa_acierto_compra_3d":  tasa(compras, "ret_3d"),
+        "tasa_acierto_compra_7d":  tasa(compras, "ret_7d"),
+        "tasa_acierto_venta_24h":  tasa(ventas, "ret_24h"),
+        "tasa_acierto_venta_3d":   tasa(ventas, "ret_3d"),
+        "generado":         datetime.now().isoformat(),
+    }
+
+    return JSONResponse(content={"resumen": resumen, "señales": señales},
+                       headers={"Content-Disposition": "attachment; filename=señales_historico.json"})
 
 
 @app.get("/api/health")
