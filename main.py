@@ -215,11 +215,16 @@ async def procesar_updates_telegram():
 
 # Últimas alertas enviadas para evitar spam
 _ultimas_alertas: dict = {}
+# Score anterior de cada moneda para detectar debilitamiento (alerta temprana)
+_score_anterior: dict = {}
 
 async def evaluar_y_alertar_telegram(simbolo: str, resultado: dict):
     """
-    Evalúa si hay que enviar alerta de Telegram.
-    Solo en modo conservador: score ≥ 68% con tendencia diaria alcista.
+    Evalúa si hay que enviar alguna de las tres alertas de mercado por Telegram:
+    1. COMPRA — score >= 68% con tendencia diaria alcista (modo conservador)
+    2. ALERTA TEMPRANA — indicadores debilitándose (RSI girando, MACD cruzando a bajista)
+       antes de que se confirme la venta. Es la señal de "presta atención".
+    3. VENTA CONFIRMADA — score <= 32%, señal de venta a nivel de mercado.
     Evita spam: no manda la misma alerta dos veces en menos de 4 horas.
     """
     if not TELEGRAM_ACTIVO:
@@ -231,44 +236,84 @@ async def evaluar_y_alertar_telegram(simbolo: str, resultado: dict):
     tendencia_1d = mtf.get("tf_1d", {}).get("tendencia", "neutral")
     precio = resultado.get("precio", 0)
     gestion = resultado.get("gestion", {})
-
-    # Solo alertar en modo conservador: COMPRAR con tendencia diaria alcista
-    if accion != "COMPRAR" or tendencia_1d != "alcista":
-        return
-
-    # Evitar spam: misma moneda, misma señal, menos de 4 horas
-    clave = f"{simbolo}_compra"
-    ahora = time.time()
-    if clave in _ultimas_alertas and ahora - _ultimas_alertas[clave] < 14400:
-        return
-
-    _ultimas_alertas[clave] = ahora
-
     rsi = round(score.get("rsi", 0), 1)
     macd = score.get("macd", {})
     cruce = macd.get("cruce", "ninguno")
-    sl = gestion.get("stop_loss", 0)
-    tp1 = gestion.get("tp1", 0)
-    tp2 = gestion.get("tp2", 0)
-    riesgo_pct = gestion.get("riesgo_pct", 0)
 
-    mensaje = (
-        f"🟢 <b>SEÑAL DE COMPRA — {simbolo}</b>\n\n"
-        f"📊 Score: <b>{score_val}%</b>\n"
-        f"💰 Precio: <b>${round(precio, 4)}</b>\n"
-        f"📈 Tendencia diaria: <b>alcista ✅</b>\n\n"
-        f"<b>Indicadores:</b>\n"
-        f"• RSI: {rsi}\n"
-        f"• MACD: {cruce if cruce != 'ninguno' else macd.get('tendencia','—')}\n\n"
-        f"<b>Gestión:</b>\n"
-        f"• Stop Loss: ${round(sl, 4)} (-{riesgo_pct}%)\n"
-        f"• TP1: ${round(tp1, 4)}\n"
-        f"• TP2: ${round(tp2, 4)}\n\n"
-        f"⚠️ Aplica siempre el stop loss. No es asesoramiento financiero."
-    )
+    ahora = time.time()
+    score_prev = _score_anterior.get(simbolo, score_val)
+    _score_anterior[simbolo] = score_val
 
-    await enviar_telegram(mensaje)
-    log.info(f"[OK] Telegram: alerta COMPRA {simbolo} enviada — score {score_val}%")
+    # ── 1. SEÑAL DE COMPRA (modo conservador) ─────────────────────────
+    if accion == "COMPRAR" and tendencia_1d == "alcista":
+        clave = f"{simbolo}_compra"
+        if clave not in _ultimas_alertas or ahora - _ultimas_alertas[clave] >= 14400:
+            _ultimas_alertas[clave] = ahora
+            sl = gestion.get("stop_loss", 0)
+            tp1 = gestion.get("tp1", 0)
+            tp2 = gestion.get("tp2", 0)
+            riesgo_pct = gestion.get("riesgo_pct", 0)
+            mensaje = (
+                f"🟢 <b>SEÑAL DE COMPRA — {simbolo}</b>\n\n"
+                f"📊 Score: <b>{score_val}%</b>\n"
+                f"💰 Precio: <b>${round(precio, 4)}</b>\n"
+                f"📈 Tendencia diaria: <b>alcista ✅</b>\n\n"
+                f"<b>Indicadores:</b>\n"
+                f"• RSI: {rsi}\n"
+                f"• MACD: {cruce if cruce != 'ninguno' else macd.get('tendencia','—')}\n\n"
+                f"<b>Gestión:</b>\n"
+                f"• Stop Loss: ${round(sl, 4)} (-{riesgo_pct}%)\n"
+                f"• TP1: ${round(tp1, 4)}\n"
+                f"• TP2: ${round(tp2, 4)}\n\n"
+                f"⚠️ Aplica siempre el stop loss. No es asesoramiento financiero."
+            )
+            await enviar_telegram(mensaje)
+            log.info(f"[OK] Telegram: alerta COMPRA {simbolo} enviada — score {score_val}%")
+        return
+
+    # ── 2. VENTA CONFIRMADA (score <= 32%) ────────────────────────────
+    if accion == "VENDER":
+        clave = f"{simbolo}_venta"
+        if clave not in _ultimas_alertas or ahora - _ultimas_alertas[clave] >= 14400:
+            _ultimas_alertas[clave] = ahora
+            mensaje = (
+                f"🔴 <b>SEÑAL DE VENTA — {simbolo}</b>\n\n"
+                f"📊 Score: <b>{score_val}%</b>\n"
+                f"💰 Precio: <b>${round(precio, 4)}</b>\n\n"
+                f"<b>Indicadores:</b>\n"
+                f"• RSI: {rsi}\n"
+                f"• MACD: {cruce if cruce != 'ninguno' else macd.get('tendencia','—')}\n\n"
+                f"Si tienes posición abierta en {simbolo}, revisa tu estrategia de salida.\n"
+                f"⚠️ No es asesoramiento financiero."
+            )
+            await enviar_telegram(mensaje)
+            log.info(f"[OK] Telegram: alerta VENTA {simbolo} enviada — score {score_val}%")
+        return
+
+    # ── 3. ALERTA TEMPRANA (debilitamiento antes de la venta confirmada) ─
+    # Condiciones: el score ha caído de forma notable respecto al ciclo anterior
+    # O el MACD acaba de cruzar a bajista mientras el score aún no es de venta
+    # Solo se activa si todavía no estamos en zona de venta (evita duplicar con #2)
+    caida_score = score_prev - score_val >= 8  # caída de 8+ puntos en 5 minutos
+    macd_girando = cruce == "bajista"
+
+    if (caida_score or macd_girando) and accion not in ("VENDER", "Posible venta"):
+        clave = f"{simbolo}_temprana"
+        if clave not in _ultimas_alertas or ahora - _ultimas_alertas[clave] >= 14400:
+            _ultimas_alertas[clave] = ahora
+            motivo = []
+            if caida_score:   motivo.append(f"el score bajó de {score_prev}% a {score_val}%")
+            if macd_girando:  motivo.append("el MACD acaba de cruzar a bajista")
+            mensaje = (
+                f"🟡 <b>ALERTA TEMPRANA — {simbolo}</b>\n\n"
+                f"Los indicadores empiezan a debilitarse: {' y '.join(motivo)}.\n\n"
+                f"📊 Score actual: <b>{score_val}%</b>\n"
+                f"💰 Precio: <b>${round(precio, 4)}</b>\n\n"
+                f"No es una señal de venta confirmada, pero presta atención si tienes posición abierta.\n"
+                f"⚠️ No es asesoramiento financiero."
+            )
+            await enviar_telegram(mensaje)
+            log.info(f"[OK] Telegram: alerta TEMPRANA {simbolo} enviada — score {score_val}%")
 
 
 app = FastAPI(title="Crypto Expert Dashboard v7")
@@ -729,9 +774,18 @@ def analizar_timeframe(klines: dict, nombre: str) -> dict:
     elif puntos <= -2: senal = "sell"
     else:              senal = "neutral"
 
-    if "alcista_fuerte" in sma_tend or (macd["tendencia"] == "alcista" and rsi < 50):
+    # Clasificación de tendencia en tres tramos:
+    # 1. Arranque/reversión: MACD alcista con RSI todavía bajo (recuperando desde sobreventa)
+    # 2. Momentum confirmado: MACD alcista con RSI en zona saludable 50-70 (sin sobrecompra)
+    # 3. Tendencia fuerte establecida: SMA20 > SMA50 con precio por encima de ambas
+    # El tramo 2 cubre el hueco detectado con datos reales: mercados en recuperación donde
+    # el RSI ya confirma momentum alcista pero las medias largas todavía no se han alineado.
+    momentum_alcista_confirmado = macd["tendencia"] == "alcista" and 50 <= rsi < 70
+    momentum_bajista_confirmado = macd["tendencia"] == "bajista" and 30 < rsi <= 50
+
+    if "alcista_fuerte" in sma_tend or (macd["tendencia"] == "alcista" and rsi < 50) or momentum_alcista_confirmado:
         tendencia = "alcista"
-    elif "bajista_fuerte" in sma_tend or (macd["tendencia"] == "bajista" and rsi > 50):
+    elif "bajista_fuerte" in sma_tend or (macd["tendencia"] == "bajista" and rsi > 50) or momentum_bajista_confirmado:
         tendencia = "bajista"
     else:
         tendencia = "neutral"
@@ -2222,7 +2276,7 @@ async def api_diario_eliminar(op_id: int):
 async def monitorizar_operaciones():
     """
     Revisa las operaciones abiertas cada 5 minutos.
-    Si alguna ha alcanzado stop loss o take profit, envía alerta por WebSocket.
+    Si alguna ha alcanzado stop loss o take profit, envía alerta por WebSocket y Telegram.
     """
     while True:
         await asyncio.sleep(300)
@@ -2261,6 +2315,27 @@ async def monitorizar_operaciones():
                         "pnl_pct":  estado["pnl_pct"],
                     })
                     log.info(f"[DIARIO ALERTA] {op['simbolo']}: {estado['alerta']}")
+
+                    # Enviar a Telegram solo alertas críticas o de stop loss cercano
+                    # Anti-spam: una vez cada 4h por operación
+                    clave_alerta = f"diario_{op['id']}_{estado['urgencia']}"
+                    ahora = time.time()
+                    if (estado["urgencia"] in ("critica", "alta", "tp1", "tp2", "tp3") and
+                        (clave_alerta not in _ultimas_alertas or
+                         ahora - _ultimas_alertas[clave_alerta] > 14400)):
+                        _ultimas_alertas[clave_alerta] = ahora
+                        icono = "🔴" if estado["urgencia"] == "critica" else \
+                                "⚠️" if estado["urgencia"] == "alta" else "🎯"
+                        mensaje = (
+                            f"{icono} <b>TU OPERACIÓN — {op['simbolo']}</b>\n\n"
+                            f"{estado['alerta']}\n\n"
+                            f"💰 PnL actual: <b>{'+' if estado['pnl_eur']>=0 else ''}{estado['pnl_eur']}€ "
+                            f"({'+' if estado['pnl_pct']>=0 else ''}{estado['pnl_pct']}%)</b>\n"
+                            f"Precio entrada: ${op.get('entrada',0)}\n"
+                            f"Precio actual: ${round(precio,6)}"
+                        )
+                        await enviar_telegram(mensaje)
+
             except Exception as e:
                 log.warning(f"[WARN] Monitor {op['simbolo']}: {e}")
 
