@@ -15,7 +15,7 @@ import math
 import os
 import time
 import statistics
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import urlencode
 
@@ -2003,7 +2003,7 @@ def registrar_señal_automatica(simbolo: str, resultado: dict):
         gestion = resultado.get("gestion", {})
 
         señal = {
-            "fecha":          datetime.now().isoformat(),
+            "fecha":          datetime.now(timezone.utc).isoformat(),
             "simbolo":        simbolo,
             "accion":         accion,
             "score":          score_data.get("score", 0),
@@ -2044,7 +2044,7 @@ def evaluar_señales_pendientes(precios_actuales: dict):
     """
     try:
         señales = cargar_señales()
-        ahora = datetime.now()
+        ahora = datetime.now(timezone.utc)
         modificado = False
 
         for s in señales:
@@ -2052,6 +2052,10 @@ def evaluar_señales_pendientes(precios_actuales: dict):
                 continue
             try:
                 fecha_señal = datetime.fromisoformat(s["fecha"])
+                # Compatibilidad con señales antiguas guardadas sin zona horaria
+                # (de antes de esta corrección) — se asumen en UTC, igual que el servidor.
+                if fecha_señal.tzinfo is None:
+                    fecha_señal = fecha_señal.replace(tzinfo=timezone.utc)
                 horas = (ahora - fecha_señal).total_seconds() / 3600
                 simbolo = s["simbolo"]
                 precio_entrada = s["precio"]
