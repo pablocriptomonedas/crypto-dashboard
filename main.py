@@ -1121,7 +1121,8 @@ async def fetch(client, nombre: str, url: str, params: dict = None):
 async def obtener_klines(client, simbolo: str, intervalo="4h", limit=200) -> dict:
     """
     Obtiene klines de Binance con autenticación si hay API key configurada.
-    Fallback a Bybit si Binance falla.
+    Fallback a Bybit si Binance falla. Incluye timestamps para poder
+    posicionar señales históricas reales en el gráfico.
     """
     try:
         params = {"symbol": f"{simbolo}USDT", "interval": intervalo, "limit": limit}
@@ -1142,6 +1143,7 @@ async def obtener_klines(client, simbolo: str, intervalo="4h", limit=200) -> dic
                 "lows":      [float(k[3]) for k in datos],
                 "closes":    [float(k[4]) for k in datos],
                 "volumenes": [float(k[5]) for k in datos],
+                "timestamps": [int(k[0]) for k in datos],
             }
     except Exception as e:
         log.warning(f"[WARN] Binance klines {simbolo}: {e}")
@@ -1163,6 +1165,7 @@ async def obtener_klines(client, simbolo: str, intervalo="4h", limit=200) -> dic
                 "lows":      [float(k[3]) for k in klines],
                 "closes":    [float(k[4]) for k in klines],
                 "volumenes": [float(k[5]) for k in klines],
+                "timestamps": [int(k[0]) for k in klines],
             }
     except Exception as e:
         log.warning(f"[WARN] Bybit klines {simbolo}: {e}")
@@ -1899,6 +1902,17 @@ async def analizar_moneda(simbolo: str, capital: float = 1000) -> dict:
                       "bajando"  if score["score"] < score_anterior else "estable"
     cache_datos[f"score_{simbolo}"] = score["score"]
 
+    señales_recientes_simbolo = [
+        {
+            "fecha":  s["fecha"],
+            "accion": s["accion"],
+            "score":  s["score"],
+            "precio": s["precio"],
+        }
+        for s in cargar_señales()[-300:]
+        if s.get("simbolo") == simbolo
+    ][-20:]  # últimas 20 señales de este símbolo para no sobrecargar el gráfico
+
     return {
         "simbolo":         simbolo,
         "precio":          precio_actual,
@@ -1910,10 +1924,12 @@ async def analizar_moneda(simbolo: str, capital: float = 1000) -> dict:
         "tendencia_score": tendencia_score,
         "orderbook":       ob_analisis,
         "noticias":        noticias,
+        "señales_reales":  señales_recientes_simbolo,
         "velas_recientes": {
-            "closes": closes[-60:], "highs":  highs[-60:],
-            "lows":   lows[-60:],   "opens":  opens[-60:],
-            "vols":   vols[-60:],
+            "closes":     closes[-60:], "highs":  highs[-60:],
+            "lows":       lows[-60:],   "opens":  opens[-60:],
+            "vols":       vols[-60:],
+            "timestamps": k4h.get("timestamps", [])[-60:],
         },
         "timestamp": datetime.now().isoformat(),
     }
@@ -2040,26 +2056,34 @@ def evaluar_señales_pendientes(precios_actuales: dict):
                 simbolo = s["simbolo"]
                 precio_entrada = s["precio"]
                 precio_actual = precios_actuales.get(simbolo, 0)
+                accion = s.get("accion", "")
 
                 if precio_actual <= 0 or precio_entrada <= 0:
                     continue
 
+                # Para señales de COMPRA: acierto si el precio sube
+                # Para señales de VENTA: acierto si el precio baja
+                # El signo del retorno representa siempre "qué tan acertada fue la predicción"
+                es_venta = accion in ("VENDER", "Posible venta")
+
+                def calcular_ret(precio_ref):
+                    if es_venta:
+                        return round((precio_entrada - precio_ref) / precio_entrada * 100, 2)
+                    return round((precio_ref - precio_entrada) / precio_entrada * 100, 2)
+
                 if horas >= 24 and s["ret_24h"] is None:
-                    ret = round((precio_actual - precio_entrada) / precio_entrada * 100, 2)
                     s["precio_24h"] = precio_actual
-                    s["ret_24h"] = ret
+                    s["ret_24h"] = calcular_ret(precio_actual)
                     modificado = True
 
                 if horas >= 72 and s["ret_3d"] is None:
-                    ret = round((precio_actual - precio_entrada) / precio_entrada * 100, 2)
                     s["precio_3d"] = precio_actual
-                    s["ret_3d"] = ret
+                    s["ret_3d"] = calcular_ret(precio_actual)
                     modificado = True
 
                 if horas >= 168 and s["ret_7d"] is None:
-                    ret = round((precio_actual - precio_entrada) / precio_entrada * 100, 2)
                     s["precio_7d"] = precio_actual
-                    s["ret_7d"] = ret
+                    s["ret_7d"] = calcular_ret(precio_actual)
                     s["evaluado"] = True
                     modificado = True
             except Exception:
@@ -2081,6 +2105,7 @@ class NuevaOperacion(BaseModel):
     tp3:        float
     capital:    float      # euros invertidos
     notas:      str = ""
+    modo:       str = "conservador"   # "conservador" o "practica"
 
 def cargar_diario() -> list:
     try:
@@ -2232,6 +2257,7 @@ async def api_diario_nueva(op: NuevaOperacion):
         "tp3":        op.tp3,
         "capital":    op.capital,
         "notas":      op.notas,
+        "modo":       op.modo,
         "estado":     "abierta",
         "fecha_entrada": datetime.now().isoformat(),
         "fecha_cierre":  None,
@@ -2430,8 +2456,11 @@ async def descargar_señales():
     pendientes = [s for s in señales if not s.get("evaluado")]
 
     # Resumen estadístico
-    compras = [s for s in evaluadas if "COMPRA" in s.get("accion","")]
-    ventas  = [s for s in evaluadas if "VENTA" in s.get("accion","")]
+    # Filtro corregido: comparación exacta en lugar de subcadena sensible a mayúsculas.
+    # Antes "VENTA" in accion nunca coincidía con "VENDER" (las letras no coinciden)
+    # y "COMPRA" in accion no coincidía con "Posible compra" (minúsculas).
+    compras = [s for s in evaluadas if s.get("accion") in ("COMPRAR", "Posible compra")]
+    ventas  = [s for s in evaluadas if s.get("accion") in ("VENDER", "Posible venta")]
 
     def tasa(lista, campo):
         validos = [s for s in lista if s.get(campo) is not None]
