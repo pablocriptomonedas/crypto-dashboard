@@ -1723,8 +1723,13 @@ def calcular_score_completo(klines_4h: dict, klines_1h: dict, klines_1d: dict,
     # porque el backtesting demostró que las compras contra tendencia bajista
     # fallan el 75% de las veces
     tendencia_diaria = tf_1d["tendencia"]
-    umbral_compra    = 72 if tendencia_diaria == "bajista" else 68
-    umbral_pos_compra= 65 if tendencia_diaria == "bajista" else 58
+    # Recalibrado con datos reales del histórico de señales (17-18 junio 2026):
+    # de 40 señales de compra fallidas a 24h, NINGUNA ocurrió con tendencia
+    # diaria "alcista" confirmada — todas fueron con "neutral" o "bajista".
+    # "Neutral" se comportó igual de mal que "bajista" en la práctica.
+    # Por eso ahora solo "alcista" confirmada obtiene el umbral permisivo.
+    umbral_compra    = 68 if tendencia_diaria == "alcista" else 72
+    umbral_pos_compra= 58 if tendencia_diaria == "alcista" else 65
 
     if   score_final >= umbral_compra:    accion = "COMPRAR"
     elif score_final >= umbral_pos_compra: accion = "Posible compra"
@@ -1985,11 +1990,22 @@ def guardar_señal(señal: dict):
     except Exception as e:
         log.warning(f"[WARN] Error guardando señal: {e}")
 
+# Cooldown para el registro histórico: evita que una misma situación continua
+# (el score se queda pegado en la misma zona durante horas) se registre como
+# decenas de señales "distintas" cuando en realidad es una sola oportunidad.
+_ultimo_registro_señal: dict = {}
+COOLDOWN_REGISTRO_HORAS = 4
+
 def registrar_señal_automatica(simbolo: str, resultado: dict):
     """
     Registra automáticamente cada señal que genera el sistema.
     Captura todas las señales independientemente de si el usuario opera o no.
     Esto permite calibrar el sistema con datos reales de mercado.
+
+    Aplica un cooldown de 4h por moneda y tipo de acción (compra/venta) para
+    que cada entrada represente una oportunidad genuinamente nueva, no la
+    misma situación re-registrada cada 5 minutos mientras el score se
+    mantiene en la misma zona.
     """
     try:
         score_data = resultado.get("score", {})
@@ -1998,6 +2014,23 @@ def registrar_señal_automatica(simbolo: str, resultado: dict):
         # Solo registrar señales relevantes, no ESPERAR genérico
         if accion == "ESPERAR":
             return
+
+        tipo_accion = "compra" if accion in ("COMPRAR", "Posible compra") else "venta"
+        clave_cooldown = f"{simbolo}_{tipo_accion}"
+        ahora = time.time()
+        registro_previo = _ultimo_registro_señal.get(clave_cooldown, {})
+        ultimo_tiempo = registro_previo.get("tiempo", 0)
+        ultima_accion = registro_previo.get("accion", "")
+
+        # Una señal que escala de "posible" a confirmada (COMPRAR/VENDER) es un
+        # cambio real y se registra igual aunque no haya pasado el cooldown.
+        es_escalada = (accion == "COMPRAR" and ultima_accion == "Posible compra") or \
+                      (accion == "VENDER" and ultima_accion == "Posible venta")
+
+        if ahora - ultimo_tiempo < COOLDOWN_REGISTRO_HORAS * 3600 and not es_escalada:
+            return  # misma situación continua, no registrar de nuevo todavía
+
+        _ultimo_registro_señal[clave_cooldown] = {"tiempo": ahora, "accion": accion}
 
         mtf = score_data.get("mtf", {})
         gestion = resultado.get("gestion", {})
@@ -2459,31 +2492,37 @@ async def descargar_señales():
     evaluadas = [s for s in señales if s.get("evaluado")]
     pendientes = [s for s in señales if not s.get("evaluado")]
 
-    # Resumen estadístico
-    # Filtro corregido: comparación exacta en lugar de subcadena sensible a mayúsculas.
-    # Antes "VENTA" in accion nunca coincidía con "VENDER" (las letras no coinciden)
-    # y "COMPRA" in accion no coincidía con "Posible compra" (minúsculas).
-    compras = [s for s in evaluadas if s.get("accion") in ("COMPRAR", "Posible compra")]
-    ventas  = [s for s in evaluadas if s.get("accion") in ("VENDER", "Posible venta")]
+    # Resumen estadístico — usa TODAS las señales, no solo las evaluadas
+    # del todo. Antes, una señal con ret_24h ya calculado se ignoraba
+    # completamente hasta que pasaban los 7 días enteros y "evaluado"
+    # pasaba a true. Ahora cada horizonte (24h/3d/7d) se calcula con
+    # las señales que YA tienen ese dato concreto, sin esperar al resto.
+    compras = [s for s in señales if s.get("accion") in ("COMPRAR", "Posible compra")]
+    ventas  = [s for s in señales if s.get("accion") in ("VENDER", "Posible venta")]
 
     def tasa(lista, campo):
         validos = [s for s in lista if s.get(campo) is not None]
         if not validos: return None
         aciertos = sum(1 for s in validos if s.get(campo,0) > 0)
-        return round(aciertos/len(validos)*100,1)
+        return {
+            "tasa":   round(aciertos/len(validos)*100, 1),
+            "n":      len(validos),
+            "ret_medio": round(sum(s.get(campo,0) for s in validos)/len(validos), 2),
+        }
 
     resumen = {
         "total_señales":    len(señales),
-        "evaluadas":        len(evaluadas),
+        "evaluadas_7d_completo": len(evaluadas),
         "pendientes":       len(pendientes),
         "señales_compra":   len(compras),
         "señales_venta":    len(ventas),
-        "tasa_acierto_compra_24h": tasa(compras, "ret_24h"),
-        "tasa_acierto_compra_3d":  tasa(compras, "ret_3d"),
-        "tasa_acierto_compra_7d":  tasa(compras, "ret_7d"),
-        "tasa_acierto_venta_24h":  tasa(ventas, "ret_24h"),
-        "tasa_acierto_venta_3d":   tasa(ventas, "ret_3d"),
-        "generado":         datetime.now().isoformat(),
+        "compra_24h": tasa(compras, "ret_24h"),
+        "compra_3d":  tasa(compras, "ret_3d"),
+        "compra_7d":  tasa(compras, "ret_7d"),
+        "venta_24h":  tasa(ventas, "ret_24h"),
+        "venta_3d":   tasa(ventas, "ret_3d"),
+        "venta_7d":   tasa(ventas, "ret_7d"),
+        "generado":         datetime.now(timezone.utc).isoformat(),
     }
 
     return JSONResponse(content={"resumen": resumen, "señales": señales},
