@@ -828,10 +828,22 @@ def calcular_alineacion_mtf(tf_1h: dict, tf_4h: dict, tf_1d: dict) -> dict:
     )
 
     # Alineación
-    if buy_count == 3:
+    # CORRECCIÓN CRÍTICA: "total_alcista" con bonus +12 requiere que los 3 timeframes
+    # tengan señal "buy" Y que el diario tenga tendencia "alcista" confirmada.
+    # Antes, el diario podía tener tendencia "neutral" pero señal "buy" (dos cosas
+    # distintas calculadas de forma independiente) y dar "total_alcista" con +12.
+    # Los datos reales del 22/06 confirmaron que eso inflaba artificialmente el score.
+    diario_alcista_confirmado = tf_1d["tendencia"] == "alcista"
+
+    if buy_count == 3 and diario_alcista_confirmado:
         alineacion  = "total_alcista"
-        descripcion = "Los 3 marcos temporales alinean al alza. Señal de maxima fiabilidad."
-        bonus       = 12   # bonus al score final
+        descripcion = "Los 3 marcos temporales alinean al alza con diario confirmado. Señal de maxima fiabilidad."
+        bonus       = 12
+    elif buy_count == 3 and not diario_alcista_confirmado:
+        # 3 señales buy pero diario solo "neutral" — no es tan fiable como parece
+        alineacion  = "alcista_confirmada"
+        descripcion = "1h y 4h alcistas con señal diaria positiva pero tendencia diaria sin confirmar. Precaucion."
+        bonus       = 6
     elif sell_count == 3:
         alineacion  = "total_bajista"
         descripcion = "Los 3 marcos temporales alinean a la baja. Señal de maxima fiabilidad."
